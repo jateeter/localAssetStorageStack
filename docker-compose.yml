@@ -1,0 +1,47 @@
+# dokieli + Solid Community Server + asset lifecycle API for the Reality Engine.
+# Attach to existing stacks (localAIStack / localOpenClawStack) via the external
+# network "reality-engine" (docker network create reality-engine).
+services:
+  css:
+    image: solidproject/community-server:7
+    command: ["-c", "/config/config.json", "-f", "/data", "-b", "${CSS_BASE_URL:-http://localhost:3000/}"]
+    volumes:
+      - css-data:/data
+      - ./css/config.json:/config/config.json:ro
+    ports: ["127.0.0.1:3000:3000"]
+    networks: [reality-engine]
+    restart: unless-stopped
+
+  dokieli:
+    build: ./dokieli
+    ports: ["127.0.0.1:8081:8080"]
+    networks: [reality-engine]
+    restart: unless-stopped
+
+  lifecycle:
+    build: ./lifecycle
+    environment:
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?set in .env}
+      REGISTRAR_TOKEN: ${REGISTRAR_TOKEN:?set in .env}
+      ENGINE_TOKEN: ${ENGINE_TOKEN:?set in .env}
+      AGENT_TOKEN: ${AGENT_TOKEN:?set in .env}
+      REVIEWER_TOKEN: ${REVIEWER_TOKEN:?set in .env}
+      RECEIPT_SECRET: ${RECEIPT_SECRET:?set in .env}
+      CSS_ORIGIN: ${CSS_ORIGIN:-http://localhost:3000}
+    volumes:
+      - lifecycle-data:/data
+    ports: ["127.0.0.1:8080:8080"]
+    networks: [reality-engine]
+    depends_on: [css]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+
+volumes:
+  css-data:
+  lifecycle-data:
+
+networks:
+  reality-engine:
+    name: reality-engine
