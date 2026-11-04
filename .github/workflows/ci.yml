@@ -1,0 +1,25 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm test
+        working-directory: lifecycle
+      - name: Validate compose
+        run: |
+          cp .env.example .env
+          sed -i 's/=$/=0123456789abcdef0123/' .env
+          docker compose config -q
+      - name: Build images
+        run: docker build -t lifecycle ./lifecycle
+      - name: Smoke test
+        run: |
+          docker run -d --name lc -p 8080:8080 -e ADMIN_TOKEN=0123456789abcdef0123 lifecycle
+          for i in $(seq 20); do curl -fs localhost:8080/health && break; sleep 1; done
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8080/assets)" = 401
