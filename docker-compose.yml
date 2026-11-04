@@ -4,17 +4,23 @@
 services:
   css:
     image: solidproject/community-server:7
-    command: ["-c", "/config/config.json", "-f", "/data", "-b", "${CSS_BASE_URL:-http://localhost:3000/}"]
+    command: ["-c", "/config/config.json", "-f", "/data", "-b", "${CSS_BASE_URL:-http://css:3000/}"]
     volumes:
       - css-data:/data
       - ./css/config.json:/config/config.json:ro
-    ports: ["127.0.0.1:3000:3000"]
+    ports:
+      - target: 3000
+        published: "${CSS_HOST_PORT:-0}"
+        host_ip: 127.0.0.1
     networks: [reality-engine]
     restart: unless-stopped
 
   dokieli:
     build: ./dokieli
-    ports: ["127.0.0.1:8081:8080"]
+    ports:
+      - target: 8080
+        published: "${DOKIELI_HOST_PORT:-0}"
+        host_ip: 127.0.0.1
     networks: [reality-engine]
     restart: unless-stopped
 
@@ -27,10 +33,15 @@ services:
       AGENT_TOKEN: ${AGENT_TOKEN:?set in .env}
       REVIEWER_TOKEN: ${REVIEWER_TOKEN:?set in .env}
       RECEIPT_SECRET: ${RECEIPT_SECRET:?set in .env}
-      CSS_ORIGIN: ${CSS_ORIGIN:-http://localhost:3000}
+      CSS_ORIGIN: http://css:3000
+      REGISTRY_FILE: /registry/registry.json
     volumes:
       - lifecycle-data:/data
-    ports: ["127.0.0.1:8080:8080"]
+      - ./runtime:/registry:ro
+    ports:
+      - target: 8080
+        published: "${LIFECYCLE_HOST_PORT:-0}"
+        host_ip: 127.0.0.1
     networks: [reality-engine]
     depends_on: [css]
     read_only: true

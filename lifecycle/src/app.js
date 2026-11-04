@@ -39,7 +39,7 @@ function validPodUrl(u, allowedOrigin) {
   return ['http:', 'https:'].includes(p.protocol) && (!allowedOrigin || p.origin === allowedOrigin);
 }
 
-export function createApp({ tokens, store = new Store(), podOrigin = '', secret = crypto.randomBytes(32) }) {
+export function createApp({ tokens, store = new Store(), podOrigin = '', secret = crypto.randomBytes(32), registryFile = '' }) {
   const d = () => store.d;
   const sign = (o) => crypto.createHmac('sha256', secret).update(JSON.stringify(o)).digest('hex');
   const receipt = (type, body) => {
@@ -82,6 +82,19 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
     need(b.generation === m.generation, 409, 'stale execution generation');
     need(b.revision === a.current.revision && b.hash === a.current.hash, 409, 'stale document revision');
   }
+
+  const readRegistry = () => {
+    need(registryFile, 503, 'instance registry unavailable');
+    let registry;
+    try {
+      registry = JSON.parse(fs.readFileSync(registryFile, 'utf8'));
+    } catch (e) {
+      if (e.code === 'ENOENT' || e instanceof SyntaxError) throw new HttpError(503, 'instance registry unavailable');
+      throw e;
+    }
+    need(registry?.schemaVersion === 1 && registry.services && typeof registry.services === 'object', 503, 'instance registry unavailable');
+    return [200, registry];
+  };
 
   const routes = [];
   const route = (method, path, fn) => routes.push([method, new RegExp(`^${path.replace(/:(\w+)/g, '(?<$1>[^/]+)')}$`), fn]);
@@ -224,6 +237,10 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
       try {
         const path = new URL(req.url, 'http://x').pathname;
         if (req.method === 'GET' && path === '/health') return send(200, { status: 'ok' });
+        if (req.method === 'GET' && path === '/registry') {
+          const [status, value] = readRegistry();
+          return send(status, value);
+        }
         const role = authenticate(req);
         need(role, 401, 'unauthorized');
         let body = {};

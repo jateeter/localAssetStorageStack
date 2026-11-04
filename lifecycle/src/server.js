@@ -15,6 +15,7 @@ const server = createApp({
   tokens,
   store: new Store(process.env.DATA_FILE || '/data/state.json'),
   podOrigin: process.env.CSS_ORIGIN || '',
+  registryFile: process.env.REGISTRY_FILE || '',
   secret: process.env.RECEIPT_SECRET || undefined
 });
 server.listen(Number(process.env.PORT || 8080), '0.0.0.0');
