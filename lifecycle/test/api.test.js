@@ -1,15 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createApp } from '../src/app.js';
 
 const tokens = { registrar: 'reg-token-0123456789', engine: 'eng-token-0123456789', agent: 'agt-token-0123456789', reviewer: 'rev-token-0123456789' };
 let server, base;
+const registryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'asset-registry-'));
+const registryFile = path.join(registryDir, 'registry.json');
 test.before(async () => {
-  server = createApp({ tokens, podOrigin: 'http://css:3000' });
+  fs.writeFileSync(registryFile, JSON.stringify({
+    schemaVersion: 1,
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    services: { css: { internalUrl: 'http://css:3000/', externalUrl: 'http://127.0.0.1:49152/' } }
+  }));
+  server = createApp({ tokens, podOrigin: 'http://css:3000', registryFile });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
-test.after(() => server.close());
+test.after(async () => {
+  await new Promise((resolve) => server.close(resolve));
+  fs.rmSync(registryDir, { recursive: true, force: true });
+});
 
 const call = async (method, path, role, body) => {
   const headers = { 'content-type': 'application/json' };
@@ -28,9 +41,29 @@ async function setup() {
   return { a, m };
 }
 
-test('health is open, everything else needs auth', async () => {
+test('health and registry are open, protected resources need auth', async () => {
   assert.equal((await call('GET', '/health')).status, 200);
   assert.equal((await call('GET', '/assets')).status, 401);
+});
+
+test('registry publishes internal and dynamically assigned host URLs', async () => {
+  const r = await call('GET', '/registry');
+  assert.equal(r.status, 200);
+  assert.equal(r.body.services.css.internalUrl, 'http://css:3000/');
+  assert.equal(r.body.services.css.externalUrl, 'http://127.0.0.1:49152/');
+  r.body.services.css.externalUrl = 'http://127.0.0.1:49153/';
+  fs.writeFileSync(registryFile, JSON.stringify(r.body));
+  assert.equal((await call('GET', '/registry')).body.services.css.externalUrl, 'http://127.0.0.1:49153/');
+});
+
+test('unavailable registry returns service unavailable', async () => {
+  fs.writeFileSync(registryFile, '{');
+  assert.equal((await call('GET', '/registry')).status, 503);
+  fs.writeFileSync(registryFile, JSON.stringify({
+    schemaVersion: 1,
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    services: { css: { internalUrl: 'http://css:3000/', externalUrl: 'http://127.0.0.1:49152/' } }
+  }));
 });
 
 test('role separation and pod origin enforcement', async () => {

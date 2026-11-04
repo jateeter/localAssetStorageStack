@@ -6,3 +6,4 @@
 *.fatbin
 .env
 node_modules/
+/runtime/registry.json
