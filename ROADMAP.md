@@ -332,9 +332,13 @@ ways:
   - the rules every workflow must obey (approval, staleness, scopes).
 
   Its state changes (an asset entering its workflow, the workflow
-  terminating) are what the instantiation component acts on.
+  terminating) reach the engines as input: the service is a Source to the PE,
+  and the changes enter through the ISRE.
 - **A separate instantiation component, which starts instantiation and
-  generation.** When an asset enters its workflow, it:
+  generation.** It hears about changes through the ISRE and acts through the
+  OSRE: what it does is an action the engines' recognition calls for, never
+  a direct reaction to the lifecycle service. When an asset enters its
+  workflow, it:
   - loads a pinned machine version on each engine instance through the
     current machine `POST`;
   - names each instance by template, engine instance (`cpp-1`) and an
@@ -350,12 +354,18 @@ ways:
 - **The engines** run the instances and decide transitions, under
   three-engine parity.
 
-Which repo the instantiation component lives in, and how it learns of the
-lifecycle service's state changes, are still open in #8. For this repo, the
+The loop runs entirely through the engines, so it stays under three-engine
+parity:
+
+> lifecycle change → Source → ISRE → recognition → OSRE → instantiation component
+
+The instantiation component does not live in RealityEngine_CI, which has no
+role after deployment. Its repo is still open in #8. For this repo, the
 consequences are:
 
-- **A5:** the service exposes those state changes as events the component can
-  follow.
+- **A5:** the service becomes a PE Source. Its workflow state changes are
+  delivered as input observations, through the source integration contract
+  the other PE sources use.
 - **A6:** `GUARDRAIL_CLASSES` is removed once the instantiated machines decide
   transitions.
 
