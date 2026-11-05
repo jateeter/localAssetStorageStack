@@ -29,14 +29,14 @@ and orders the solutions into milestones.
 | D1 | **Several CSS instances, each at its own address.** This stack's CSS is not PIM's and is never merged with it. Only the CSS *image version* is unified (RealityEngine_CI#707). | owner, 2026-11-04 |
 | D2 | **All data in motion is encrypted, TLS 1.3, loopback included** (RealityEngine_CI#668). A pod's address includes its scheme, so the stack moves to `https` in the *same* change that fixes its addresses (A1). Otherwise every WebID and ACL changes twice. | owner, 2026-10-30 |
 | D3 | **The IFRS `document_workflow` model is the lifecycle for IFRS documents** (entity + period + asset type; `DRAFT`/`IN_REVIEW`/`APPROVED`/`STALE`; `evidenceRefs`/`upstreamRefs`; `expectedRevision`), and this service is its Solid-backed repository. **Other domains will have other workflows**, so the service holds a workflow per domain and never builds IFRS into its core. | owner, 2026-11-04 |
-| D4 | **Where the review rules live** (corpus machines under three-engine parity, or the service's `GUARDRAIL_CLASSES`) is a separate item that needs discussion: localAssetStorageStack#8. It is taken up now, not deferred until after v0.0.2. | owner, 2026-11-04: open for discussion |
+| D4 | **The rules live in the corpus.** Each domain's workflow is a template in `RealityEngine_Machines`, instantiated per asset. The engine instance running that instance decides transitions. A template is proven in regression on identical corpora before it ships. The lifecycle service decides no workflow transition, and `GUARDRAIL_CLASSES` is removed once instantiation works. | owner, 2026-11-04 (closed; localAssetStorageStack#8) |
 | D5 | **Agents never write a pod directly.** Every pod write goes through the lifecycle service, which checks the binding's scopes. Scopes are enforced at that one point; no ACL is edited per binding. This may change as the lifecycle service evolves. | owner, 2026-11-04 |
 | D6 | **The lifecycle service is a store and gatekeeper only.** A separate instantiation component instantiates workflow machines and generates their agents; the service neither instantiates nor decides transitions. | owner, 2026-11-04 |
 
 D3 decides the data model, so A3 builds on it directly. A3 and A5 both
 rewrite the store and its routes; doing them in the wrong order means doing
 them twice. D4 does not block A3–A5: the storage invariants they add hold
-wherever the review rules end up.
+whatever the workflow template says.
 
 ### Workflows per domain (D3)
 
@@ -205,12 +205,11 @@ never code.
 ### Structural
 
 **9. The review machine sits outside the engine.**
-- Open for discussion (D4, localAssetStorageStack#8). The proposal:
-  `GUARDRAIL_CLASSES` is removed, and each domain's review workflow becomes RE
-  machine definitions in `RealityEngine_Machines`:
+- Decided (D4, localAssetStorageStack#8). `GUARDRAIL_CLASSES` is removed, and
+  each domain's review workflow becomes a template in `RealityEngine_Machines`:
   - in that domain (IFRS first);
   - listed in its manifest;
-  - under three-engine parity like every other machine.
+  - proven in regression, like every corpus machine, before it ships.
 - The service then:
   - accepts a transition only as the OSRE output of an engine binding;
   - checks that the binding receipt is for the current machine generation;
@@ -302,18 +301,18 @@ never code.
 | **A3** | Integrity: read-back and ETag, Ed25519/JCS receipts and `/keys`, append-only event log, `expectedRevision` | 2, 6, 7 | A2 | v0.0.2 |
 | **A4** | Review gate: publish only on an independent `approve` of the exact revision | 3 | A2, A3 | v0.0.2 |
 | **A5** | Domain model: core/workflow split, IFRS as the first workflow, entity/period keys, `upstreamRefs` propagation, scope tokens and `/pod` proxy, `beacon` settled | 5 (scopes), 8, 11 | A3 | v0.0.2 |
-| **A6** | Where the review rules live: discussion first (localAssetStorageStack#8), then whatever it decides | 9 | D4 discussion | separate item; discussed during v0.0.2, not deferred |
+| **A6** | Rules in the corpus: workflow templates instantiated per asset by Manager; `GUARDRAIL_CLASSES` removed once instantiation works | 9 | D4 (closed); #8 phases P1 and P3 | with #8's phases |
 | **A7** | dokieli inbox → findings | 10 | A2, A3 | v0.0.2 |
 | **A8** | Backup, restore and export | 15 | A3 | v0.0.2 |
 | **A9** | Suite integration: `startUniverse.sh`/`stopUniverse.sh`, instance registry entry, release images and compose, local-lane smoke (14, CI side), ISRE/OSRE, PE and OpenClaw wiring | 14 (CI side) | A1–A5 | v0.0.2 |
 
-### A6 is a separate item
+### A6 follows #8
 
-The owner set A6 apart (2026-11-04). It needs discussion before any work, and
-that discussion happens now, during the v0.0.2 cycle (localAssetStorageStack#8).
+D4 was discussed in localAssetStorageStack#8 and closed (owner, 2026-11-04):
+the rules live in the corpus. A6 lands with #8's phases: the template schema
+(P1) and Manager's instantiation component (P3).
 
-Whatever it decides, the hard-coded rules can't do much harm in the meantime,
-because of A3 and A4:
+Until then, the hard-coded rules can't do much harm, because of A3 and A4:
 
 - the rules can no longer publish without independent approval;
 - every transition they make is on the record.
@@ -339,8 +338,8 @@ ways:
   OSRE: what it does is an action the engines' recognition calls for, never
   a direct reaction to the lifecycle service. When an asset enters its
   workflow, it:
-  - loads a pinned machine version on each engine instance through the
-    current machine `POST`;
+  - loads a pinned machine version, through the current machine `POST`, on
+    each engine instance whose corpus carries the template;
   - names each instance by template, engine instance (`cpp-1`) and an
     instance counter that survives restarts;
   - allocates one Source per instance;
@@ -351,19 +350,25 @@ ways:
 
   When the workflow terminates, it unloads and retires all of them. Instances
   scale with the number of assets in flight.
-- **The engines** run the instances and decide transitions, under
-  three-engine parity.
+- **The engines:** the engine instance running a workflow instance decides
+  its transitions.
 
-The loop runs entirely through the engines, so it stays under three-engine
-parity:
+The loop runs entirely through the engines:
 
 > lifecycle change → Source → ISRE → recognition → OSRE → instantiation component
 
-The instantiation component does not live in RealityEngine_CI, which has no
-role after deployment. Its repo is still open in #8. The owner expects it to
-be deployed operationally through RealityEngine_Manager (2026-11-04, not
-yet decided). For this repo, the
-consequences are:
+**Regression and deployment** (owner, 2026-11-04;
+RealityEngine_CI `docs/ENGINEERING_CONTRACT.md`):
+
+- **In deployment,** parity is not a goal. Engine instances commonly carry
+  different corpora, so Manager instantiates a template only on the engine
+  instances whose corpus carries it, all-or-nothing per engine instance.
+- **In regression,** the same template, on the voting engines with identical
+  corpora, must make the same decisions. That is where a template is proven.
+
+The instantiation component lives in **RealityEngine_Manager** (owner,
+2026-11-04); RealityEngine_CI has no role after deployment. Each engine
+instance has its own instance counter. For this repo, the consequences are:
 
 - **A5:** the service becomes a PE Source. Its workflow state changes are
   delivered as input observations, through the source integration contract
