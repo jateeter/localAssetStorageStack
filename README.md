@@ -38,5 +38,7 @@ On startup the script writes `runtime/registry.json` with each service's stable 
 
 Runtime integration with ISRE/OSRE, PE, and OpenClaw is pending; this repo provides the contracts and service.
 
+Known gaps and the plan to close them: [ROADMAP.md](ROADMAP.md), from the review in `docs/localAssetStorageStack Gaps.pdf`.
+
 ## Test
 `cd lifecycle && npm test` (CI also validates compose and smoke-tests the container).
