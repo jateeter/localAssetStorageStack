@@ -69,16 +69,9 @@ tests and builds its images on the local lane. The contract is
 `RealityEngine_CI/docs/ENGINEERING_CONTRACT.md`. Builds are controlled through
 RealityEngine_CI (`docs/BUILD_CONTROL_CONTRACT.md`).
 
-## Standing rules — authoritative in `RealityEngine_CI/docs/ENGINEERING_CONTRACT.md`
+## Standing rules
 
-The contract's wording governs. The rules in short:
-
-- Qualify every "registry".
-- Regenerate a stale registry; don't fail it.
-- Verify a merge beyond the hosted checks.
-- RealityEngine_CI is the authority.
-- Name these files `CLAUDE.md`, uppercase.
-- Never commit to main: branch from `origin/main`, PR, verify, squash-merge,
-  clean up.
-- Use `/opt/homebrew/bin/bash`, not zsh.
-- Engine parity is proven in regression; it is never required in deployment.
+The standing rules are in
+`../RealityEngine_CI/docs/ENGINEERING_CONTRACT.md`, which is
+authoritative. They are not listed or summarised here, so this file never
+falls behind the contract. Read it before changing anything here.
