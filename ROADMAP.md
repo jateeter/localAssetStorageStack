@@ -31,6 +31,7 @@ and orders the solutions into milestones.
 | D3 | **The IFRS `document_workflow` model is the lifecycle for IFRS documents** (entity + period + asset type; `DRAFT`/`IN_REVIEW`/`APPROVED`/`STALE`; `evidenceRefs`/`upstreamRefs`; `expectedRevision`), and this service is its Solid-backed repository. **Other domains will have other workflows**, so the service holds a workflow per domain and never builds IFRS into its core. | owner, 2026-11-04 |
 | D4 | **Where the review rules live** (corpus machines under three-engine parity, or the service's `GUARDRAIL_CLASSES`) is a separate item that needs discussion: localAssetStorageStack#8. It is taken up now, not deferred until after v0.0.2. | owner, 2026-11-04: open for discussion |
 | D5 | **Agents never write a pod directly.** Every pod write goes through the lifecycle service, which checks the binding's scopes. Scopes are enforced at that one point; no ACL is edited per binding. This may change as the lifecycle service evolves. | owner, 2026-11-04 |
+| D6 | **The lifecycle service is a store and gatekeeper only.** A separate instantiation component instantiates workflow machines and generates their agents; the service neither instantiates nor decides transitions. | owner, 2026-11-04 |
 
 D3 decides the data model, so A3 builds on it directly. A3 and A5 both
 rewrite the store and its routes; doing them in the wrong order means doing
@@ -62,8 +63,9 @@ Two rules hold in every workflow, because they are core:
 - an approval is on an exact revision by someone other than its author;
 - a changed upstream marks its dependents stale.
 
-How a workflow is declared depends on D4. Until that is settled, a workflow
-is a data file the service loads, never code.
+A workflow is declared as corpus machines that the instantiation component
+instantiates (#8). Until that lands, it is a data file the service loads,
+never code.
 
 ## Solutions by finding
 
@@ -316,8 +318,46 @@ because of A3 and A4:
 - the rules can no longer publish without independent approval;
 - every transition they make is on the record.
 
-What remains open is whether the rules run under three-engine parity, and
-where each domain's workflow is declared.
+### The direction set so far (localAssetStorageStack#8, owner 2026-11-04)
+
+Workflow machines are **instantiated dynamically, one set per asset**, from the
+machine corpus, which serves as the class library. The work is split three
+ways:
+
+- **The lifecycle service (this repo): store and gatekeeper only (D6).** It
+  holds:
+  - the asset and its pinned, read-back revisions;
+  - the append-only history and the receipts;
+  - the asset pointer every agent uses (D5);
+  - the rules every workflow must obey (approval, staleness, scopes).
+
+  Its state changes (an asset entering its workflow, the workflow
+  terminating) are what the instantiation component acts on.
+- **A separate instantiation component, which starts instantiation and
+  generation.** When an asset enters its workflow, it:
+  - loads a pinned machine version on each engine instance through the
+    current machine `POST`;
+  - names each instance by template, engine instance (`cpp-1`) and an
+    instance counter that survives restarts;
+  - allocates one Source per instance;
+  - generates and dynamically loads the workflow's ACP and MCP behaviors and
+    the OpenClaw agents for both sides of each action (instigation from the
+    OSRE, response back through the Source), all configured with the asset
+    pointer.
+
+  When the workflow terminates, it unloads and retires all of them. Instances
+  scale with the number of assets in flight.
+- **The engines** run the instances and decide transitions, under
+  three-engine parity.
+
+Which repo the instantiation component lives in, and how it learns of the
+lifecycle service's state changes, are still open in #8. For this repo, the
+consequences are:
+
+- **A5:** the service exposes those state changes as events the component can
+  follow.
+- **A6:** `GUARDRAIL_CLASSES` is removed once the instantiated machines decide
+  transitions.
 
 ## What this does not change
 
