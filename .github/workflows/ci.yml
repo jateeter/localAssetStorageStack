@@ -17,7 +17,9 @@ jobs:
           sed -i 's/=$/=0123456789abcdef0123/' .env
           docker compose config -q
       - name: Build images
-        run: docker build -t lifecycle ./lifecycle
+        run: |
+          docker build -t lifecycle ./lifecycle
+          docker build -t dokieli ./dokieli
       - name: Smoke test
         run: |
           docker run -d --name lc -p 8080:8080 -e ADMIN_TOKEN=0123456789abcdef0123 lifecycle
