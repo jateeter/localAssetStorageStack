@@ -1,9 +1,4 @@
-*.i
-*.ii
-*.gpu
-*.ptx
-*.cubin
-*.fatbin
 .env
 node_modules/
 /runtime/registry.json
+.DS_Store
