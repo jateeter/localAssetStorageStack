@@ -28,13 +28,42 @@ and orders the solutions into milestones.
 |---|---|---|
 | D1 | **Several CSS instances, each at its own address.** This stack's CSS is not PIM's and is never merged with it. Only the CSS *image version* is unified (RealityEngine_CI#707). | owner, 2026-11-04 |
 | D2 | **All data in motion is encrypted, TLS 1.3, loopback included** (RealityEngine_CI#668). A pod's address includes its scheme, so the stack moves to `https` in the *same* change that fixes its addresses (A1). Otherwise every WebID and ACL changes twice. | owner, 2026-10-30 |
-| D3 | **One canonical document lifecycle: the IFRS `document_workflow` model** (entity + period + asset type; `DRAFT`/`IN_REVIEW`/`APPROVED`/`STALE`; `evidenceRefs`/`upstreamRefs`; `expectedRevision`). This service becomes its Solid-backed repository. | **proposed, needs owner confirmation** |
-| D4 | **The review rules are RE machines in the corpus**, run by the three voting engines. This service stores and enforces; it does not decide transitions. | **proposed, needs owner confirmation** |
-| D5 | **Agents never write a pod directly.** Every pod write goes through the lifecycle service, which checks the binding's scopes. Scopes are enforced at that one point; no ACL is edited per binding. | **proposed, needs owner confirmation** |
+| D3 | **The IFRS `document_workflow` model is the lifecycle for IFRS documents** (entity + period + asset type; `DRAFT`/`IN_REVIEW`/`APPROVED`/`STALE`; `evidenceRefs`/`upstreamRefs`; `expectedRevision`), and this service is its Solid-backed repository. **Other domains will have other workflows**, so the service holds a workflow per domain and never builds IFRS into its core. | owner, 2026-11-04 |
+| D4 | **Where the review rules live** (corpus machines under three-engine parity, or the service's `GUARDRAIL_CLASSES`) is a separate item that needs discussion: localAssetStorageStack#8. It is taken up now, not deferred until after v0.0.2. | owner, 2026-11-04: open for discussion |
+| D5 | **Agents never write a pod directly.** Every pod write goes through the lifecycle service, which checks the binding's scopes. Scopes are enforced at that one point; no ACL is edited per binding. This may change as the lifecycle service evolves. | owner, 2026-11-04 |
 
-D3 and D4 decide the data model, so confirm them before A3. A3 and A5 both
+D3 decides the data model, so A3 builds on it directly. A3 and A5 both
 rewrite the store and its routes; doing them in the wrong order means doing
-them twice.
+them twice. D4 does not block A3–A5: the storage invariants they add hold
+wherever the review rules end up.
+
+### Workflows per domain (D3)
+
+IFRS is the first workflow, not the only one. The service is therefore split
+into two layers:
+
+- **Core, the same for every domain:**
+  - assets keyed by domain, entity, period and asset type;
+  - pinned revisions with `expectedRevision`;
+  - pod read-back;
+  - the event log and receipts;
+  - identity, scopes and the independent-approval gate;
+  - dependency propagation.
+- **Workflow, one per domain:**
+  - its statuses and transitions;
+  - its asset catalog;
+  - its guards.
+
+  IFRS's comes from `document_workflow.py` and `document-asset-catalog.json`.
+  A domain without one can't register assets.
+
+Two rules hold in every workflow, because they are core:
+
+- an approval is on an exact revision by someone other than its author;
+- a changed upstream marks its dependents stale.
+
+How a workflow is declared depends on D4. Until that is settled, a workflow
+is a data file the service loads, never code.
 
 ## Solutions by finding
 
@@ -174,10 +203,11 @@ them twice.
 ### Structural
 
 **9. The review machine sits outside the engine.**
-- `GUARDRAIL_CLASSES` is removed. The review lifecycle becomes RE machine
-  definitions in `RealityEngine_Machines` (D4):
-  - in the IFRS domain if D3 holds, otherwise in a new `machines/domains/` domain;
-  - listed in that domain's manifest;
+- Open for discussion (D4, localAssetStorageStack#8). The proposal:
+  `GUARDRAIL_CLASSES` is removed, and each domain's review workflow becomes RE
+  machine definitions in `RealityEngine_Machines`:
+  - in that domain (IFRS first);
+  - listed in its manifest;
   - under three-engine parity like every other machine.
 - The service then:
   - accepts a transition only as the OSRE output of an engine binding;
@@ -201,8 +231,9 @@ them twice.
   finding.
 
 **11. It doesn't match the IFRS document model.**
-- Per D3, this service becomes the Solid-backed implementation of the store
-  contract `document_workflow.py` defines:
+- Per D3, this service becomes the Solid-backed implementation, for IFRS, of
+  the store contract `document_workflow.py` defines (other domains bring their
+  own workflows on the same core):
   - head, revision and event records;
   - the four statuses, the review and staleness guards, and `expectedRevision`.
 - The contract is written down once, in RealityEngine_Machines beside
@@ -266,26 +297,27 @@ them twice.
 | **A0** | Build and hygiene: pins, hardening, healthchecks, CI in step, `.gitignore` | 12, 13, 14 (repo side), 16; #5, #6 | — | v0.0.2 |
 | **A1** | Permanent address over TLS: `assets-css.localhost`, fixed port, `https`, private network | 1, 5 (network split) | A0, the RealityEngine_CI#668 certificate path | v0.0.2 |
 | **A2** | Identity: the service's WebID and DPoP client, WebID principals, roles, closed registration, ACLs | 4, 5 (registration, ACLs) | A1 | v0.0.2 |
-| **A3** | Integrity: read-back and ETag, Ed25519/JCS receipts and `/keys`, append-only event log, `expectedRevision` | 2, 6, 7 | A2; D3 confirmed | v0.0.2 |
+| **A3** | Integrity: read-back and ETag, Ed25519/JCS receipts and `/keys`, append-only event log, `expectedRevision` | 2, 6, 7 | A2 | v0.0.2 |
 | **A4** | Review gate: publish only on an independent `approve` of the exact revision | 3 | A2, A3 | v0.0.2 |
-| **A5** | One model: IFRS store contract, entity/period keys, `upstreamRefs` propagation, scope tokens and `/pod` proxy, `beacon` settled | 5 (scopes), 8, 11 | A3; D3, D5 confirmed | v0.0.2 |
-| **A6** | Review machines in the corpus, single open binding, `GUARDRAIL_CLASSES` removed | 9 | A5; D4 confirmed | next after v0.0.2, unless the owner pulls it in |
+| **A5** | Domain model: core/workflow split, IFRS as the first workflow, entity/period keys, `upstreamRefs` propagation, scope tokens and `/pod` proxy, `beacon` settled | 5 (scopes), 8, 11 | A3 | v0.0.2 |
+| **A6** | Where the review rules live: discussion first (localAssetStorageStack#8), then whatever it decides | 9 | D4 discussion | separate item; discussed during v0.0.2, not deferred |
 | **A7** | dokieli inbox → findings | 10 | A2, A3 | v0.0.2 |
 | **A8** | Backup, restore and export | 15 | A3 | v0.0.2 |
 | **A9** | Suite integration: `startUniverse.sh`/`stopUniverse.sh`, instance registry entry, release images and compose, local-lane smoke (14, CI side), ISRE/OSRE, PE and OpenClaw wiring | 14 (CI side) | A1–A5 | v0.0.2 |
 
-### Why A6 is not marked as a v0.0.2 gate
+### A6 is a separate item
 
-Moving the review rules into the corpus needs new machines admitted through
-the domain process and run under three-engine parity. That makes it the
-largest item here and the only one that touches the engines' corpus. Until it
-lands, A4's gate and A3's history keep the hard-coded rules from doing harm:
+The owner set A6 apart (2026-11-04). It needs discussion before any work, and
+that discussion happens now, during the v0.0.2 cycle (localAssetStorageStack#8).
+
+Whatever it decides, the hard-coded rules can't do much harm in the meantime,
+because of A3 and A4:
 
 - the rules can no longer publish without independent approval;
 - every transition they make is on the record.
 
-What remains is that they are not under parity. The owner decides whether
-v0.0.2 waits for that.
+What remains open is whether the rules run under three-engine parity, and
+where each domain's workflow is declared.
 
 ## What this does not change
 
