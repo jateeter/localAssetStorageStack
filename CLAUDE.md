@@ -24,9 +24,10 @@ Local dokieli asset storage for the RealityEngine suite, in the release from
   - it owns the asset pointer that agents use;
   - pod writes go only through it (D5).
 
-  It does not instantiate workflow machines or decide transitions. A separate
-  instantiation component does that, driven through the ISRE and OSRE
-  (localAssetStorageStack#8).
+  It does not instantiate workflow machines or decide transitions.
+  RealityEngine_Manager's instantiation component does that, driven through
+  the ISRE and OSRE (localAssetStorageStack#8). Workflow rules live in the
+  corpus (D4).
 
 ## Codebase map
 
@@ -80,3 +81,4 @@ The contract's wording governs. The rules in short:
 - Never commit to main: branch from `origin/main`, PR, verify, squash-merge,
   clean up.
 - Use `/opt/homebrew/bin/bash`, not zsh.
+- Engine parity is proven in regression; it is never required in deployment.
