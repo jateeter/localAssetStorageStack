@@ -1,15 +1,27 @@
 name: CI
-on: [push, pull_request]
+
+# Minimal by design (RealityEngine_CI docs/ENGINEERING_CONTRACT.md, "this
+# repository is the authority"): enough to force local validation, never enough
+# to stand in for it. The stack is verified live by RealityEngine_CI's local
+# lane, which pins this repo, runs the lifecycle tests and builds its images.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
 permissions:
   contents: read
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22 }
-      - run: npm test
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - name: Lifecycle tests
+        run: npm test
         working-directory: lifecycle
       - name: Validate compose
         run: |
