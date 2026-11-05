@@ -360,7 +360,9 @@ parity:
 > lifecycle change → Source → ISRE → recognition → OSRE → instantiation component
 
 The instantiation component does not live in RealityEngine_CI, which has no
-role after deployment. Its repo is still open in #8. For this repo, the
+role after deployment. Its repo is still open in #8. The owner expects it to
+be deployed operationally through RealityEngine_Manager (2026-11-04, not
+yet decided). For this repo, the
 consequences are:
 
 - **A5:** the service becomes a PE Source. Its workflow state changes are
