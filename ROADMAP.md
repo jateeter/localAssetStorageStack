@@ -552,7 +552,7 @@ the start.
 - **Verify:** one engine instance, one asset, the full chain with a simulated
   reviewer.
 
-**10. Asset-workflow tracking in Grafana** (D9; RealityEngine_CI, see below).
+**10. Asset-workflow tracking in Grafana** (D9; RealityEngine_CI#723).
 - **The lifecycle service exports:**
   - Prometheus metrics at `/metrics`: frames open; continuations by status;
     parked age; resumes, supersessions and abandons; reviews pending;
