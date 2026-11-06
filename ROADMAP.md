@@ -1,6 +1,6 @@
 # localAssetStorageStack — Implementation Roadmap
 
-Last reviewed: 2026-11-04
+Last reviewed: 2026-11-06
 
 ## Where the project stands
 
@@ -32,6 +32,12 @@ and orders the solutions into milestones.
 | D4 | **The rules live in the corpus.** Each domain's workflow is a template in `RealityEngine_Machines`, instantiated per asset. The engine instance running that instance decides transitions. A template is proven in regression on identical corpora before it ships. The lifecycle service decides no workflow transition, and `GUARDRAIL_CLASSES` is removed once instantiation works. | owner, 2026-11-04 (closed; localAssetStorageStack#8) |
 | D5 | **Agents never write a pod directly.** Every pod write goes through the lifecycle service, which checks the binding's scopes. Scopes are enforced at that one point; no ACL is edited per binding. This may change as the lifecycle service evolves. | owner, 2026-11-04 |
 | D6 | **The lifecycle service is a store and gatekeeper only.** A separate instantiation component instantiates workflow machines and generates their agents; the service neither instantiates nor decides transitions. | owner, 2026-11-04 |
+| D7 | **Fixed ports:** `assets-css` at `https://assets-css.localhost:13443/` and `assets-dokieli` at `https://assets-dokieli.localhost:13444/`. They differ from PIM's `13000`, and no other repo uses them. | owner, 2026-11-06 |
+| D8 | **Agents act under the lifecycle service's agent principal** with frame-scoped capability tokens, not a WebID per agent. | owner, 2026-11-06 |
+| D9 | **Reviewer decisions go through the authenticated lifecycle API;** dokieli is for authoring and annotation. **The asset workflow is tracked in a new Grafana dashboard.** | owner, 2026-11-06 |
+| D10 | **Parked continuations live in the lifecycle service,** in its append-only event log, with the pod holding a pointer. **No step chooses its successor beyond the PE's ISRE folding.** | owner, 2026-11-06 |
+| D11 | **Termination closes the head of the workflow.** A document-workflow template's completion is the close of its canonical workflow head. | owner, 2026-11-06 |
+| D12 | **The whole assetID integration is in `release-v0.0.2`,** the engine, OpenClaw and Manager phases included. | owner, 2026-11-06 |
 
 D3 decides the data model, so A3 builds on it directly. A3 and A5 both
 rewrite the store and its routes; doing them in the wrong order means doing
@@ -73,7 +79,7 @@ never code.
 
 **1. Pod addresses change every run.**
 - Give this stack's CSS one permanent address, the same inside and outside the
-  containers: `https://assets-css.localhost:<ASSETS_CSS_PORT>/`.
+  containers: `https://assets-css.localhost:<ASSETS_CSS_PORT>/`, with `ASSETS_CSS_PORT` = `13443` (D7).
   - `ASSETS_CSS_PORT` is fixed per install, with a default that differs from
     PIM's `13000`.
   - The service is renamed from `css` to `assets-css`. The generic name is
@@ -375,6 +381,211 @@ instance has its own instance counter. For this repo, the consequences are:
   the other PE sources use.
 - **A6:** `GUARDRAIL_CLASSES` is removed once the instantiated machines decide
   transitions.
+
+## assetID integration plan (release-v0.0.2)
+
+This plan completes the assetID integration and turns on the interconnections:
+- dokieli ↔ CSS;
+- dokieli → the lifecycle service;
+- the lifecycle service ↔ CSS;
+- the lifecycle service ↔ the universe (ISRE, OSRE, the PEs, OpenClaw, Manager).
+
+It rests on D1–D12 and on what is already specified:
+- cloneable machines, the 64-cell nest block, block generations, and the
+  two outbound paths: `RealityEngine_CI/SURFACE_SPEC.md`, "Cloneable machines";
+- continuations: `RealityEngine_CI/docs/CONTINUATIONS_APPROVAL_CHAIN.md`;
+- the corpus side: RealityEngine_Machines#243, #244.
+
+**Every phase below is in `release-v0.0.2`** (D12), the engine, OpenClaw and
+Manager phases included.
+
+Each phase lands in its own repository, through a PR. "Verify" names what
+proves it. A hosted check alone does not.
+
+### Phases
+
+**1. Stable, encrypted addresses** (A0 remainder, A1).
+- **CSS:** renamed `css` → `assets-css`, at
+  `https://assets-css.localhost:13443/` (D7). The URL is the same inside the
+  containers (network alias) and outside them, and the `-b` base URL never
+  changes. `up.js` keeps random host ports only for the lifecycle link. If
+  13443 or 13444 is taken, it fails and names the holder.
+- **dokieli:** at `https://assets-dokieli.localhost:13444/` (D7). It must be
+  https too: browsers refuse mixed content against an https pod.
+- **TLS 1.3 on every link** (D2), with certificates from the
+  RealityEngine_CI#668 certificate path.
+- **Hardening:** `cap_drop`, `read_only`, non-root and healthchecks for CSS and
+  dokieli; `depends_on: service_healthy`.
+- **`up.js`:** stops calling its file the instance registry. It is this stack's
+  service file.
+- **Verify:**
+  - start the stack twice: one pod URL and WebID are the same both times;
+  - TLS 1.3 is checked on each link.
+
+**2. Identity** (A2). Turns on dokieli ↔ CSS sign-in, and the lifecycle
+service's identity on CSS.
+- **Registration:** CSS registration is closed. People and reviewers are
+  provisioned idempotently.
+- **The lifecycle service:** a WebID and DPoP client credentials, in a secret
+  volume.
+- **People:** sign in to dokieli with Solid-OIDC against `assets-css`, so
+  dokieli reads and writes their pods directly; CORS allows only the dokieli
+  origin.
+- **The lifecycle API:** takes the principal from a Solid-OIDC token, never
+  from the body; roles attach to WebIDs.
+- **Agents:** OpenClaw agents act under the lifecycle service's agent
+  principal, with frame-scoped capability tokens, not a WebID per agent (D8).
+- **Verify:**
+  - a scripted login, then dokieli saves and reloads a document in a pod;
+  - a forged `reviewer` field is refused.
+
+**3. Integrity** (A3). Turns on lifecycle ↔ CSS reads and writes.
+- **Pinning:** the service reads the pod itself and records the ETag and the
+  SHA-256 of the bytes; writes carry `If-Match`.
+- **History:** an append-only, fsynced event log.
+- **Receipts:** Ed25519 over the RFC 8785 canonical form, with keys at `/keys`.
+- **Verify:**
+  - pin, edit the document in dokieli, and the next binding is refused with
+    `409 pod changed since pin`;
+  - receipts verify offline.
+
+**4. The assetID frame with continuations** (localAssetStorageStack#13; A4,
+A5). The core of the integration.
+- **The frame:**
+  - `documents`: tagged URIs with pinned revisions, permissions, authorities
+    and identifications;
+  - `action`, `arguments`, `return`;
+  - `continuations`: the frame's continuation log, with a `current` pointer.
+- **Continuations live in the lifecycle service** (D10), in its append-only
+  event log, with the frame's pod document holding a pointer.
+- **The API:** build, read and write the frame's return; capture, park, resume,
+  supersede, abandon and close a continuation. Resume checks:
+  - the capability;
+  - the one-shot generation;
+  - the pinned hash (a mismatch takes the escape path);
+  - that the named engine instance carries the template (if not, the escape
+    path).
+- **Abandoning** needs the case's abandon capability, never an agent's. It
+  writes a receipt naming who, why and the generation, and closes the frame.
+- **No step chooses its successor** beyond the PE's ISRE folding (D10). The
+  chain is the template's, and what varies it is what the fold presents to
+  the ISRE. The continuation records the result.
+- **Agents never write a pod directly** (D5). They act through a frame-scoped
+  capability token (EdDSA JWT) on the `/pod` proxy.
+- **The review gate** (A4): approve requires a reviewer WebID other than the
+  preparer, on the exact revision.
+- **The IFRS workflow** (A5): entity, period and asset-type keys; `upstreamRefs`
+  staleness propagation, which is the escape continuation.
+- **Termination closes the head of the workflow** (D11). For a
+  document-workflow template, the completion its clone terminates through is
+  the close of the workflow head: the canonical entity/period/asset-type head
+  is closed in the lifecycle service, and the frame closes with it.
+- **Verify:** unit tests for every continuation rule:
+  - a replayed resume;
+  - a stale upstream;
+  - approve by the preparer;
+  - an abandon without the capability;
+  - an engine instance without the template;
+  - a head closed on termination.
+
+**5. dokieli → lifecycle** (A7). Turns on dokieli ↔ lifecycle.
+- **Inboxes:** each asset gets an inbox container in its pod; dokieli's
+  annotations arrive there as Linked Data Notifications.
+- **Subscription:** the service subscribes through CSS 7's Solid Notifications
+  (WebSocket), with a startup sweep. Each annotation becomes a finding on the
+  frame.
+- **Reviewer decisions go through the lifecycle API** with the reviewer's
+  Solid-OIDC token (D9), and resume the parked continuation. An inbox
+  notification has no authenticated sender, so it never counts as an approval.
+- **Verify:**
+  - an annotation in dokieli appears as a finding in the frame log;
+  - an API approval resumes k2 and yields k3.
+
+**6. The lifecycle service as a PE Source.** Turns on lifecycle → engines.
+- **A source mapping** for the IFRS domain's
+  `reviewed-accounting-event-source-mapping`. These observations write the
+  template machines' ordinary input lanes, so the templates fire and emit
+  dispatch envelopes:
+  - an asset entering its workflow;
+  - a revision pinned;
+  - a disposition;
+  - a continuation resumed or gone stale.
+- **The termination path:** a completion is written into the clone's own input
+  quarter (`/api/integrations/completions`); for IFRS it is the head close (D11).
+- **The voting PEs** write clone input quarters and compose nothing else from
+  the clone band. The TypeScript PE follows (RealityEngine_Manager#324).
+- **Verify:** one lifecycle event produces the same envelope on all three voting
+  engines.
+
+**7. Clone and recycle on the voting engines** (RealityEngine_CPP#191,
+RealityEngine_LSP#184, RealityEngine_Scala#209). It can run in parallel from
+the start.
+- **Load-time recognition** and `GET /api/machines/cloneable`.
+- **Clone and recycle** with block generations, lowest-free 64-cell nest blocks,
+  `clone.maxActive`, and `INSTANCE_ID` in the clone id.
+- **A parity spec** in `RealityEngine_Machines/tests/integration`
+  (RealityEngine_CI#713).
+- **Verify:** 3-of-3 in regression. The followers come on their own cadence
+  (RealityEngine_Rust#71, RealityEngine_Manager#324).
+
+**8. Agents and tools** (localOpenClawStack#91, RealityEngine_CI#714).
+- **Per-clone agents:** loaded at clone and unloaded at recycle, as atomic
+  `openclaw.json` edits through the FIFO queue. Each unload removes the agent's
+  entry, workspace and state.
+- **Agent hooks:** the prologue reads the frame; the epilogue writes `return`.
+  No agent holds an approve, record or publish capability.
+- **`re-mcp` tools** scoped to the frame by assetID.
+- **Verify:**
+  - concurrent loads and unloads leave `openclaw.json` consistent;
+  - an agent can't reach a document outside its frame.
+
+**9. Manager's instantiation component** (RealityEngine_Manager#323).
+- **Hears** dispatch envelopes from the OSRE, through the PE trigger dispatch.
+- **For each envelope:**
+  - prologue: resume the continuation, clone, load the agents, dispatch;
+  - epilogue: capture or park the next continuation, recycle with the
+    generation, unload the agents.
+- **Full pool:** queues FIFO.
+- **Restart:** recovers from the surviving frames.
+- **Routes:** serves `/api/engine/:id/clone|recycle|clones`.
+- **`GUARDRAIL_CLASSES` is removed** here, once instantiation works (A6).
+- **Verify:** one engine instance, one asset, the full chain with a simulated
+  reviewer.
+
+**10. Asset-workflow tracking in Grafana** (D9; RealityEngine_CI#723).
+- **The lifecycle service exports:**
+  - Prometheus metrics at `/metrics`: frames open; continuations by status;
+    parked age; resumes, supersessions and abandons; reviews pending;
+  - its event log as structured lines to Loki.
+- **Manager exports** live clones and pool use per engine instance and template,
+  and the queue depth.
+- **A new provisioned dashboard,** `RealityEngine_CI/config/dashboards/asset-workflow.json`.
+  It tracks each asset through the workflow, from frame to continuation to
+  clone to review to head close, so a reviewer's wait and a stuck
+  continuation are visible.
+- **Verify:** the dashboard renders from a local-lane run of phase 11's chain.
+
+**11. Suite integration and regression** (A9; RealityEngine_CI#706, #715).
+- **Start and stop:** `startUniverse.sh --assets` and `stopUniverse.sh` start and
+  stop this stack, and write the lifecycle and CSS addresses into
+  `config/integrations.json`.
+- **Release bundle:** the three images join the release images and compose.
+- **Local-lane smoke test:**
+  - pod provisioning;
+  - a pin read back from CSS;
+  - addresses stable across a restart;
+  - offline receipt verification.
+- **The IFRS chain on three engines, compared:**
+  - prepare → review (parked, zero blocks held) → approve (approver ≠
+    preparer) → record → head closed;
+  - a replayed continuation refused;
+  - a stale upstream escaping;
+  - `maxActive + 1` concurrent actions showing the pool limit.
+
+### Order
+Phases 1 → 2 → 3 → 4 → 6 → 9 → 11 are the critical path. Phases 5, 8 and 10
+run once phase 4's frame API is fixed. Phase 7 needs nothing from this stack
+and runs from the start.
 
 ## What this does not change
 
