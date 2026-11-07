@@ -13,9 +13,9 @@ test.before(async () => {
   fs.writeFileSync(registryFile, JSON.stringify({
     schemaVersion: 1,
     updatedAt: '2026-01-01T00:00:00.000Z',
-    services: { css: { internalUrl: 'http://css:3000/', externalUrl: 'http://127.0.0.1:49152/' } }
+    services: { 'assets-css': { internalUrl: 'https://assets-css.localhost:13443/', externalUrl: 'https://assets-css.localhost:13443/' } }
   }));
-  server = createApp({ tokens, podOrigin: 'http://css:3000', registryFile });
+  server = createApp({ tokens, podOrigin: 'https://assets-css.localhost:13443', registryFile });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -35,7 +35,7 @@ const manifest = { triggers: [] };
 const manifestHash = crypto.createHash('sha256').update(JSON.stringify(manifest)).digest('hex');
 
 async function setup() {
-  const a = (await call('POST', '/assets', 'registrar', { podUrl: 'http://css:3000/alice/doc.html', caseId: 'c1', revision: 'r1', content: 'hello' })).body;
+  const a = (await call('POST', '/assets', 'registrar', { podUrl: 'https://assets-css.localhost:13443/alice/doc.html', caseId: 'c1', revision: 'r1', content: 'hello' })).body;
   const m = (await call('POST', `/assets/${a.id}/machines`, 'registrar', {})).body;
   await call('POST', `/machines/${m.id}/verify`, 'registrar', { manifest, manifestHash });
   return { a, m };
@@ -49,11 +49,11 @@ test('health and registry are open, protected resources need auth', async () => 
 test('registry publishes internal and dynamically assigned host URLs', async () => {
   const r = await call('GET', '/registry');
   assert.equal(r.status, 200);
-  assert.equal(r.body.services.css.internalUrl, 'http://css:3000/');
-  assert.equal(r.body.services.css.externalUrl, 'http://127.0.0.1:49152/');
-  r.body.services.css.externalUrl = 'http://127.0.0.1:49153/';
+  assert.equal(r.body.services['assets-css'].internalUrl, 'https://assets-css.localhost:13443/');
+  assert.equal(r.body.services['assets-css'].externalUrl, 'https://assets-css.localhost:13443/');
+  r.body.services['assets-css'].externalUrl = 'https://assets-css.localhost:13444/';
   fs.writeFileSync(registryFile, JSON.stringify(r.body));
-  assert.equal((await call('GET', '/registry')).body.services.css.externalUrl, 'http://127.0.0.1:49153/');
+  assert.equal((await call('GET', '/registry')).body.services['assets-css'].externalUrl, 'https://assets-css.localhost:13444/');
 });
 
 test('unavailable registry returns service unavailable', async () => {
@@ -62,20 +62,20 @@ test('unavailable registry returns service unavailable', async () => {
   fs.writeFileSync(registryFile, JSON.stringify({
     schemaVersion: 1,
     updatedAt: '2026-01-01T00:00:00.000Z',
-    services: { css: { internalUrl: 'http://css:3000/', externalUrl: 'http://127.0.0.1:49152/' } }
+    services: { 'assets-css': { internalUrl: 'https://assets-css.localhost:13443/', externalUrl: 'https://assets-css.localhost:13443/' } }
   }));
 });
 
 test('role separation and pod origin enforcement', async () => {
   assert.equal((await call('POST', '/assets', 'agent', {})).status, 403);
-  const r = await call('POST', '/assets', 'registrar', { podUrl: 'http://evil.example/x', caseId: 'c', revision: '1', content: 'x' });
+  const r = await call('POST', '/assets', 'registrar', { podUrl: 'https://evil.example/x', caseId: 'c', revision: '1', content: 'x' });
   assert.equal(r.status, 400);
 });
 
 test('register pins revision hash; hash mismatch rejected', async () => {
   const { a } = await setup();
   assert.match(a.current.hash, /^[0-9a-f]{64}$/);
-  const bad = await call('POST', '/assets', 'registrar', { podUrl: 'http://css:3000/a', caseId: 'c', revision: '1', content: 'x', hash: 'a'.repeat(64) });
+  const bad = await call('POST', '/assets', 'registrar', { podUrl: 'https://assets-css.localhost:13443/a', caseId: 'c', revision: '1', content: 'x', hash: 'a'.repeat(64) });
   assert.equal(bad.status, 400);
 });
 

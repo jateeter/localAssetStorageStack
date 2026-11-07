@@ -1,10 +1,21 @@
 import http from 'node:http';
+import https from 'node:https';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const id = (p) => `${p}-${crypto.randomUUID()}`;
 const now = () => new Date().toISOString();
+
+// TLS under RealityEngine_CI config/transport-profile.json (RealityEngine_CI#668):
+// TLS 1.3 only, the profile's AEAD suites, the post-quantum hybrid group first.
+export const TLS_PROFILE = {
+  minVersion: 'TLSv1.3',
+  maxVersion: 'TLSv1.3',
+  ciphers: 'TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256',
+  ecdhCurve: 'X25519MLKEM768:X25519:secp384r1'
+};
+export const tlsServerOptions = ({ key, cert }) => ({ ...TLS_PROFILE, key, cert });
 
 // Guardrail classes: allowed actions and transitions bound to each machine at instantiation.
 export const GUARDRAIL_CLASSES = {
@@ -36,10 +47,10 @@ export class Store {
 function validPodUrl(u, allowedOrigin) {
   let p;
   try { p = new URL(u); } catch { return false; }
-  return ['http:', 'https:'].includes(p.protocol) && (!allowedOrigin || p.origin === allowedOrigin);
+  return p.protocol === 'https:' && (!allowedOrigin || p.origin === allowedOrigin);
 }
 
-export function createApp({ tokens, store = new Store(), podOrigin = '', secret = crypto.randomBytes(32), registryFile = '' }) {
+export function createApp({ tokens, store = new Store(), podOrigin = '', secret = crypto.randomBytes(32), registryFile = '', tls = null }) {
   const d = () => store.d;
   const sign = (o) => crypto.createHmac('sha256', secret).update(JSON.stringify(o)).digest('hex');
   const receipt = (type, body) => {
@@ -228,7 +239,7 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
     return [200, { valid: signature === sign(rest) }];
   });
 
-  const server = http.createServer((req, res) => {
+  const handler = (req, res) => {
     const send = (s, o) => { const b = JSON.stringify(o); res.writeHead(s, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(b) }); res.end(b); };
     const chunks = [];
     let size = 0;
@@ -260,6 +271,8 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
         send(500, { error: 'internal error' });
       }
     });
-  });
-  return server;
+  };
+  // `tls` ({ key, cert }) serves HTTPS under the profile; without it the app is a
+  // plain in-process handler, which only the unit tests use.
+  return tls ? https.createServer(tlsServerOptions(tls), handler) : http.createServer(handler);
 }

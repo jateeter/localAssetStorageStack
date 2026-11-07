@@ -1,6 +1,6 @@
 # localAssetStorageStack Guidance
 
-Last reviewed: 2026-11-04
+Last reviewed: 2026-11-07
 
 See `/Users/johnt/workspace/GitHub/CLAUDE.md` for the integrated application
 map. Update both this file and the root map when the stack's services, its
@@ -12,11 +12,13 @@ Local dokieli asset storage for the RealityEngine suite, in the release from
 `release-v0.0.2` (RealityEngine_CI#706). Three services on the external
 `reality-engine` Docker network:
 
-- `css`: a Solid Community Server holding the document pods. **It is one of
+Every link is **TLS 1.3** (RealityEngine_CI#668, ROADMAP phase 1): certificates from RealityEngine_CI `scripts/lib/re_pki.py`, no plaintext listener, `https` pod URLs only. lifecycle → `assets-css` has no mTLS because CSS can't verify client certificates (an owner-accepted deficiency).
+
+- `assets-css` at `https://assets-css.localhost:13443/` (fixed, D7): a Solid Community Server holding the document pods. **It is one of
   several CSS instances in the suite, each at its own address.** It is not
   PIM's, and the two are never merged. Only the image version is shared with
   PIM's (RealityEngine_CI#707).
-- `dokieli`: the authoring and annotation UI. It is built from a pinned dokieli
+- `assets-dokieli` at `https://assets-dokieli.localhost:13444/` (fixed, D7): the authoring and annotation UI. It is built from a pinned dokieli
   commit with Yarn 4 and dokieli's own lockfile (`dokieli/Dockerfile`).
 - `lifecycle`: the document lifecycle API (`lifecycle/`). It is the **store and
   gatekeeper** for assets (decision D6):
@@ -32,12 +34,13 @@ Local dokieli asset storage for the RealityEngine suite, in the release from
 ## Codebase map
 
 - `docker-compose.yml`: the three services and their volumes.
-- `scripts/up.js`: starts the stack on free loopback ports and writes
-  `runtime/registry.json`. That file is the stack's own service registry, not
-  the instance registry; it is gitignored runtime state.
+- `scripts/up.js`: issues the certificates (needs RealityEngine_CI beside this
+  repo, or `RE_PKI`), links them under `runtime/pki/`, refuses a taken fixed
+  port, starts the stack and writes `runtime/registry.json`: the stack's own
+  service file, not the instance registry; gitignored runtime state.
 - `lifecycle/src/app.js`: routes, store and receipts.
 - `lifecycle/test/`: `node --test`.
-- `css/config.json`: CSS configuration.
+- `css/config.json`: CSS configuration (file storage, HTTPS server factory).
 - `ROADMAP.md`: the plan that answers the gaps review
   (`docs/localAssetStorageStack Gaps.pdf`), milestones A0–A9 and decisions
   D1–D6. Read it before changing the lifecycle model, identity, storage or

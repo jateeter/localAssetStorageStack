@@ -1,4 +1,5 @@
 .env
 node_modules/
 /runtime/registry.json
+/runtime/pki/
 .DS_Store

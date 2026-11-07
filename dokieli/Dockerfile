@@ -29,5 +29,8 @@ RUN npm install -g --no-fund --no-audit "corepack@${COREPACK_VERSION}" \
 FROM nginxinc/nginx-unprivileged:1.29-alpine@sha256:0c79d56aee561a1d81c63f00eee5fb5fe29279560cdc55e91425133104c7fbe6
 COPY --from=build /src /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 8080
-HEALTHCHECK --interval=10s --timeout=5s --retries=6 CMD wget -qO- http://127.0.0.1:8080/ >/dev/null || exit 1
+EXPOSE 13444
+# Verifies the served certificate against the install CA and its name: no -k.
+HEALTHCHECK --interval=10s --timeout=5s --retries=6 CMD curl --fail --silent --show-error --tlsv1.3 \
+  --cacert /pki/ca.crt --resolve assets-dokieli.localhost:13444:127.0.0.1 \
+  https://assets-dokieli.localhost:13444/ >/dev/null || exit 1

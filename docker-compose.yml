@@ -1,31 +1,80 @@
 # dokieli + Solid Community Server + asset lifecycle API for the Reality Engine.
 # Attach to existing stacks (localAIStack / localOpenClawStack) via the external
 # network "reality-engine" (docker network create reality-engine).
+#
+# Start it with `node scripts/up.js`, not `docker compose up`: up.js issues each
+# service's certificate from the suite's PKI (RealityEngine_CI
+# scripts/lib/re_pki.py) and links them under runtime/pki/ (gitignored), which
+# the services mount read-only. Other compose commands (ps, logs, exec, down)
+# work as usual.
+#
+# Every link is TLS 1.3 (RealityEngine_CI#668, ROADMAP D2). The two user-facing
+# services have fixed addresses, the same inside and outside the containers
+# (ROADMAP D7): https://assets-css.localhost:13443/ and
+# https://assets-dokieli.localhost:13444/.
+x-hardening: &hardening
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+
 services:
-  css:
-    image: solidproject/community-server:7
-    command: ["-c", "/config/config.json", "-f", "/data", "-b", "${CSS_BASE_URL:-http://css:3000/}"]
+  assets-css:
+    <<: *hardening
+    image: solidproject/community-server:7.3.0
+    command:
+      - "-c"
+      - "/config/config.json"
+      - "-f"
+      - "/data"
+      - "-b"
+      - "https://assets-css.localhost:13443/"
+      - "-p"
+      - "13443"
+      - "--httpsKey"
+      - "/pki/self/key.pem"
+      - "--httpsCert"
+      - "/pki/self/chain.pem"
+    environment:
+      # TLS 1.3 only, with the profile's suites (RealityEngine_CI config/transport-profile.json).
+      NODE_OPTIONS: "--tls-min-v1.3 --tls-cipher-list=TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256"
+      NODE_EXTRA_CA_CERTS: /pki/ca.crt
     volumes:
       - css-data:/data
       - ./css/config.json:/config/config.json:ro
+      - ./runtime/pki/assets-css:/pki/self:ro
+      - ./runtime/pki/ca.crt:/pki/ca.crt:ro
     ports:
-      - target: 3000
-        published: "${CSS_HOST_PORT:-0}"
-        host_ip: 127.0.0.1
-    networks: [reality-engine]
-    restart: unless-stopped
+      - "127.0.0.1:13443:13443"
+    networks:
+      reality-engine:
+        aliases: [assets-css.localhost]
+    healthcheck:
+      # Verifies the served certificate against the install CA and its name.
+      test: ["CMD", "node", "-e", "require('https').get({host:'127.0.0.1',port:13443,path:'/',servername:'assets-css.localhost',minVersion:'TLSv1.3'},r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
-  dokieli:
+  assets-dokieli:
+    <<: *hardening
     build: ./dokieli
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./runtime/pki/assets-dokieli:/pki/self:ro
+      - ./runtime/pki/ca.crt:/pki/ca.crt:ro
     ports:
-      - target: 8080
-        published: "${DOKIELI_HOST_PORT:-0}"
-        host_ip: 127.0.0.1
-    networks: [reality-engine]
-    restart: unless-stopped
+      - "127.0.0.1:13444:13444"
+    networks:
+      reality-engine:
+        aliases: [assets-dokieli.localhost]
 
   lifecycle:
+    <<: *hardening
     build: ./lifecycle
+    read_only: true
     environment:
       ADMIN_TOKEN: ${ADMIN_TOKEN:?set in .env}
       REGISTRAR_TOKEN: ${REGISTRAR_TOKEN:?set in .env}
@@ -33,21 +82,25 @@ services:
       AGENT_TOKEN: ${AGENT_TOKEN:?set in .env}
       REVIEWER_TOKEN: ${REVIEWER_TOKEN:?set in .env}
       RECEIPT_SECRET: ${RECEIPT_SECRET:?set in .env}
-      CSS_ORIGIN: http://css:3000
+      CSS_ORIGIN: https://assets-css.localhost:13443
       REGISTRY_FILE: /registry/registry.json
+      TLS_KEY_FILE: /pki/self/key.pem
+      TLS_CERT_FILE: /pki/self/chain.pem
+      # Outbound calls (assets-css) verify against the install CA.
+      NODE_EXTRA_CA_CERTS: /pki/ca.crt
     volumes:
       - lifecycle-data:/data
       - ./runtime:/registry:ro
+      - ./runtime/pki/lifecycle:/pki/self:ro
+      - ./runtime/pki/ca.crt:/pki/ca.crt:ro
     ports:
-      - target: 8080
+      - target: 8443
         published: "${LIFECYCLE_HOST_PORT:-0}"
         host_ip: 127.0.0.1
     networks: [reality-engine]
-    depends_on: [css]
-    read_only: true
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    restart: unless-stopped
+    depends_on:
+      assets-css:
+        condition: service_healthy
 
 volumes:
   css-data:

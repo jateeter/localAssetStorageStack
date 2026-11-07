@@ -1,3 +1,13 @@
+// Start the asset storage stack on TLS 1.3 (RealityEngine_CI#668;
+// localAssetStorageStack#15, ROADMAP phase 1).
+//
+// 1. Issue each service's certificate from the suite's PKI
+//    (RealityEngine_CI scripts/lib/re_pki.py; lane $RE_PKI_LANE, default native).
+// 2. Check the fixed ports are free: assets-css 13443 and assets-dokieli 13444
+//    (ROADMAP D7). A taken port is an error that names its holder; the port is
+//    never moved, because a pod's URL includes it.
+// 3. Start the stack, and write runtime/registry.json: this stack's own
+//    service file, not the RealityEngine instance registry.
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
@@ -5,12 +15,57 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const FIXED = { 'assets-css': 13443, 'assets-dokieli': 13444 };
 const services = {
-  css: { containerPort: 3000, internalUrl: 'http://css:3000/' },
-  dokieli: { containerPort: 8080, internalUrl: 'http://dokieli:8080/' },
-  lifecycle: { containerPort: 8080, internalUrl: 'http://lifecycle:8080/' }
+  'assets-css': { url: 'https://assets-css.localhost:13443/' },
+  'assets-dokieli': { url: 'https://assets-dokieli.localhost:13444/' },
+  lifecycle: { internalUrl: 'https://lifecycle:8443/', containerPort: 8443 }
 };
 
+const fail = (message) => { console.error(`up.js: ${message}`); process.exit(1); };
+
+// --- 1. certificates --------------------------------------------------------
+const pki = process.env.RE_PKI || path.resolve(root, '..', 'RealityEngine_CI', 'scripts', 'lib', 're_pki.py');
+if (!fs.existsSync(pki)) fail(`the suite PKI is not at ${pki}: check out RealityEngine_CI beside this repository, or set RE_PKI`);
+const re = (...args) => execFileSync('python3', [pki, ...args], { encoding: 'utf8', env: process.env });
+re('init');
+re('issue', 'assets-css', '--kind', 'both', '--dns', 'assets-css.localhost', '--dns', 'assets-css', '--ip', '127.0.0.1');
+re('issue', 'assets-dokieli', '--kind', 'server', '--dns', 'assets-dokieli.localhost', '--dns', 'assets-dokieli', '--ip', '127.0.0.1');
+re('issue', 'lifecycle', '--kind', 'both', '--dns', 'lifecycle', '--dns', 'localhost', '--ip', '127.0.0.1');
+const css = JSON.parse(re('paths', 'assets-css'));
+const issued = path.dirname(path.dirname(css.cert));
+// Link the certificates into runtime/pki/ (gitignored), where the compose file
+// mounts them. Links, not copies: keys stay in the PKI's 0600 files and a
+// renewal reaches the services on their next start.
+const linkDir = path.join(root, 'runtime', 'pki');
+fs.mkdirSync(linkDir, { recursive: true });
+for (const name of ['assets-css', 'assets-dokieli', 'lifecycle']) {
+  const link = path.join(linkDir, name);
+  fs.rmSync(link, { force: true, recursive: false });
+  fs.symlinkSync(path.join(issued, name), link);
+}
+fs.rmSync(path.join(linkDir, 'ca.crt'), { force: true });
+fs.symlinkSync(css.ca, path.join(linkDir, 'ca.crt'));
+const composeEnv = { ...process.env };
+const compose = (args, opts = {}) => execFileSync('docker', ['compose', ...args], { cwd: root, encoding: 'utf8', env: composeEnv, ...opts });
+
+// --- 2. fixed ports -----------------------------------------------------------
+const portFree = (port) => new Promise((resolve) => {
+  const server = net.createServer();
+  server.once('error', () => resolve(false));
+  server.listen(port, '127.0.0.1', () => server.close(() => resolve(true)));
+});
+const holder = (port) => {
+  try {
+    return execFileSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], { encoding: 'utf8' }).trim().split('\n').slice(1).join('; ');
+  } catch { return 'unknown'; }
+};
+const ours = compose(['ps', '--services', '--status', 'running']).trim().split('\n');
+for (const [service, port] of Object.entries(FIXED)) {
+  if (!ours.includes(service) && !(await portFree(port))) {
+    fail(`port ${port} for ${service} is taken (${holder(port)}). It is fixed by ROADMAP D7 and is never moved.`);
+  }
+}
 const allocatePort = () => new Promise((resolve, reject) => {
   const server = net.createServer();
   server.once('error', reject);
@@ -20,60 +75,41 @@ const allocatePort = () => new Promise((resolve, reject) => {
   });
 });
 
-const assignedPorts = Object.fromEntries(await Promise.all(
-  Object.keys(services).map(async (name) => [name, await allocatePort()])
-));
-const registryDir = path.join(root, 'runtime');
-const destination = path.join(registryDir, 'registry.json');
-fs.mkdirSync(registryDir, { recursive: true });
-
-const networks = execFileSync('docker', ['network', 'ls', '--filter', 'name=^reality-engine$', '--format', '{{.Name}}'], {
-  cwd: root,
-  encoding: 'utf8'
-}).trim().split('\n');
+// --- 3. start ---------------------------------------------------------------
+const networks = execFileSync('docker', ['network', 'ls', '--filter', 'name=^reality-engine$', '--format', '{{.Name}}'], { cwd: root, encoding: 'utf8' }).trim().split('\n');
 if (!networks.includes('reality-engine')) {
   execFileSync('docker', ['network', 'create', 'reality-engine'], { cwd: root, stdio: 'inherit' });
 }
-
+const registryDir = path.join(root, 'runtime');
+const destination = path.join(registryDir, 'registry.json');
+fs.mkdirSync(registryDir, { recursive: true });
 fs.rmSync(destination, { force: true });
-const composeEnv = {
-  ...process.env,
-  CSS_HOST_PORT: String(assignedPorts.css),
-  DOKIELI_HOST_PORT: String(assignedPorts.dokieli),
-  LIFECYCLE_HOST_PORT: String(assignedPorts.lifecycle),
-  CSS_BASE_URL: `http://127.0.0.1:${assignedPorts.css}/`
-};
-execFileSync('docker', ['compose', 'up', '-d', '--build'], { cwd: root, stdio: 'inherit', env: composeEnv });
 
-const publishedPort = (service, containerPort) => {
-  const address = execFileSync('docker', ['compose', 'port', service, String(containerPort)], {
-    cwd: root,
-    encoding: 'utf8'
-  }).trim().split('\n')[0];
-  const port = Number(address.slice(address.lastIndexOf(':') + 1));
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error(`Could not determine published port for ${service}: ${address}`);
-  }
-  if (port !== assignedPorts[service]) {
-    throw new Error(`Published port changed unexpectedly for ${service}: expected ${assignedPorts[service]}, got ${port}`);
-  }
-  return port;
-};
+const lifecyclePort = await allocatePort();
+execFileSync('docker', ['compose', 'up', '-d', '--build', '--wait'], {
+  cwd: root,
+  stdio: 'inherit',
+  env: { ...composeEnv, LIFECYCLE_HOST_PORT: String(lifecyclePort) }
+});
+
+const published = compose(['port', 'lifecycle', '8443']).trim().split('\n')[0];
+const port = Number(published.slice(published.lastIndexOf(':') + 1));
+if (port !== lifecyclePort) fail(`lifecycle published on ${published}, expected ${lifecyclePort}`);
 
 const registry = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   updatedAt: new Date().toISOString(),
-  services: Object.fromEntries(Object.entries(services).map(([name, service]) => {
-    const port = publishedPort(name, service.containerPort);
-    return [name, {
-      internalUrl: service.internalUrl,
-      externalUrl: `http://127.0.0.1:${port}/`
-    }];
-  }))
+  ca: css.ca,
+  services: {
+    'assets-css': { internalUrl: services['assets-css'].url, externalUrl: services['assets-css'].url },
+    'assets-dokieli': { internalUrl: services['assets-dokieli'].url, externalUrl: services['assets-dokieli'].url },
+    lifecycle: { internalUrl: services.lifecycle.internalUrl, externalUrl: `https://localhost:${port}/` }
+  }
 };
-
 const temporary = `${destination}.tmp`;
 fs.writeFileSync(temporary, `${JSON.stringify(registry, null, 2)}\n`, { mode: 0o644 });
 fs.renameSync(temporary, destination);
 
-console.log(`Instance registry: ${registry.services.lifecycle.externalUrl}registry`);
+console.log(`up.js: stack service file ${destination}`);
+console.log(`up.js: dokieli ${services['assets-dokieli'].url}, pods ${services['assets-css'].url}, lifecycle https://localhost:${port}/`);
+console.log(`up.js: browsers trust the install CA once (owner step): ${re('trust-command').trim()}`);
