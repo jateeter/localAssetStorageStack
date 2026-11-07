@@ -34,6 +34,17 @@ jobs:
           docker build -t dokieli ./dokieli
       - name: Smoke test
         run: |
-          docker run -d --name lc -p 8080:8080 -e ADMIN_TOKEN=0123456789abcdef0123 lifecycle
-          for i in $(seq 20); do curl -fs localhost:8080/health && break; sleep 1; done
-          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:8080/assets)" = 401
+          # TLS only (RealityEngine_CI#668): a throwaway certificate for the
+          # smoke test; curl verifies against it with --cacert.
+          mkdir -p "$RUNNER_TEMP/pki"
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:secp384r1 -nodes -sha384 -days 1 \
+            -subj /CN=localhost -addext subjectAltName=DNS:localhost \
+            -keyout "$RUNNER_TEMP/pki/key.pem" -out "$RUNNER_TEMP/pki/cert.pem"
+          chmod 644 "$RUNNER_TEMP/pki/key.pem"
+          docker run -d --name lc -p 8443:8443 -v "$RUNNER_TEMP/pki:/pki:ro" \
+            -e ADMIN_TOKEN=0123456789abcdef0123 -e TLS_KEY_FILE=/pki/key.pem -e TLS_CERT_FILE=/pki/cert.pem lifecycle
+          C=(curl --tlsv1.3 --cacert "$RUNNER_TEMP/pki/cert.pem")
+          for i in $(seq 20); do "${C[@]}" -fs https://localhost:8443/health && break; sleep 1; done
+          test "$("${C[@]}" -s -o /dev/null -w '%{http_code}' https://localhost:8443/assets)" = 401
+          # A TLS 1.2-only client is refused.
+          ! curl --tlsv1.2 --tls-max 1.2 --cacert "$RUNNER_TEMP/pki/cert.pem" -fs https://localhost:8443/health

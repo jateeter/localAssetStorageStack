@@ -405,6 +405,12 @@ proves it. A hosted check alone does not.
 ### Phases
 
 **1. Stable, encrypted addresses** (A0 remainder, A1).
+- **Status (2026-11-07): done** (localAssetStorageStack#15). The services are
+  on TLS 1.3 with `X25519MLKEM768` at the fixed addresses. TLS 1.2 and
+  plaintext are refused, a pod's URL and WebID are unchanged across a restart,
+  and lifecycle → `assets-css` verifies against the install CA. That link has
+  no mTLS (an owner-accepted deficiency: CSS can't verify client
+  certificates). Closing CSS registration moves to phase 2.
 - **CSS:** renamed `css` → `assets-css`, at
   `https://assets-css.localhost:13443/` (D7). The URL is the same inside the
   containers (network alias) and outside them, and the `-b` base URL never
