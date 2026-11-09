@@ -12,6 +12,11 @@ export function fakePod() {
     if (forbidden.has(url)) return new Response('', { status: 403 });
     const doc = docs.get(url);
     if ((init.method || 'GET') === 'PUT') {
+      if (init.headers['if-none-match'] === '*') {
+        if (doc) return new Response('', { status: 412 });
+        put(url, Buffer.from(init.body).toString());
+        return new Response(null, { status: 201, headers: { etag: docs.get(url).etag } });
+      }
       if (!doc || init.headers['if-match'] !== doc.etag) return new Response('', { status: 412 });
       put(url, Buffer.from(init.body).toString());
       return new Response(null, { status: 204, headers: { etag: docs.get(url).etag } });

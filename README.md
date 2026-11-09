@@ -31,6 +31,30 @@ The lifecycle service pins **what the pod holds**, never what it is sent (ROADMA
 - **History.** Every change is appended to `/data/events.jsonl` and fsynced before it is answered. Each line is chained to the one before by SHA-256, so a rewritten past is detected; the service refuses to start on a broken log. Read an asset's history at `GET /assets/:id/history`.
 - **Receipts** are Ed25519 over the RFC 8785 canonical form. The public key is at `GET /keys` (open). Verify one offline with `node scripts/verify-receipt.js receipt.json keys.json`.
 
+## The assetID frame and its continuations
+
+An agentic dispatch acts on a **frame** (ROADMAP phase 4; RealityEngine_CI `docs/CONTINUATIONS_APPROVAL_CHAIN.md` is authoritative). The frame's id is the assetID the engines' clone route is given. It holds:
+- its `documents`, registered assets pinned by revision, SHA-256 and ETag;
+- `action`, `arguments` and `return`;
+- the case keys (entity, period, asset type) that name its **workflow head**;
+- `upstreamRefs`;
+- its **continuation log**, append-only, with `current` naming the live record.
+
+A pointer to the frame is written beside its primary document in the pod (D10).
+
+- **Capture** (the engine side, after a step): records the next continuation. It names an engine instance and a template, never a clone. `park: true` waits for a person, and the head goes to IN_REVIEW.
+- **Resume:** one-shot.
+  - It checks the generation, and the principal the continuation names. Agents never resume, and a reviewer may not be the preparer.
+  - It checks the pinned documents, and that the engine instance still carries the template (`RE_REGISTRY_URL`; without it, `engineCheck: "unchecked"` is reported).
+  - Any failed check takes the **escape path**: the continuation is superseded, the frame re-enters at its `onStale` target, and the head goes STALE.
+  - A person's resume is a decision (`approve` or `rework`) on the exact pinned revision.
+  - An engine resume returns the step's agent capability once, scoped to the frame and that continuation.
+- **Staleness:** pinning a new revision of a frame document or an upstream ref takes the escape path for every open frame that depends on it.
+- **Abandon** needs the case's abandon capability: the preparer, or registrar automation, and never an agent or the engine side. **Close** is termination, and the workflow head closes with the frame. Each head holds one open frame at a time.
+- **Agents never write a pod directly** (D5). Through `/pod` they read their own frame's documents (`pod:read`), and write them only with `pod:write`, under `If-Match` with the pinned ETag.
+
+Every action is a log event and an Ed25519 receipt.
+
 All services join the external-by-name Docker network `reality-engine`, so localAIStack / localOpenClawStack services can reach them at these stable container addresses. Create the network once if it does not already exist:
 
 ```
@@ -74,6 +98,12 @@ Routes:
 - `POST /assets/:id/dispositions` (reviewer) – decisions by the caller's WebID, one per reviewer per revision
 - `GET|PUT /roles` (admin) – the role list; `PUT` takes `{ webId, roles }` and persists over `runtime/roles.json`
 - `GET /whoami` – the caller as this service sees them
+- `POST /frames` (engine, registrar) – build a frame and its first continuation `k0`; `GET /frames/:id`, `GET /frames/:id/history`, `GET /heads`
+- `PUT /frames/:id/return` – the step's return (its agent, with the frame capability)
+- `POST /frames/:id/continuations` (engine) – capture or park the next continuation
+- `POST /frames/:id/continuations/:k/resume` – `{ generation, decision? }`: `resume` with `next` (and an agent capability for an engine resume), or `escape`
+- `POST /frames/:id/continuations/:k/supersede` (engine), `POST /frames/:id/abandon` (the case's abandon capability), `POST /frames/:id/close` (engine; termination)
+- `GET|PUT /pod?url=` – an agent's only way to its frame's documents
 - `GET /assets/:id/history` – the asset's events from the append-only log
 - `GET /keys` (open) – the receipt keys (JWKS)
 - `GET /receipts/:id`, `POST /receipts/:id/verify` – the same check `scripts/verify-receipt.js` makes offline

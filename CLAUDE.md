@@ -52,6 +52,7 @@ Secrets live in `.secrets/` (gitignored, 0600), never under `runtime/`, which th
 - `lifecycle/src/app.js`: routes, store and receipts.
 - `lifecycle/src/identity.js`: the Solid-OIDC/DPoP verifier, the role list, service tokens, capability tokens and the service's own CSS identity. `lifecycle/src/jose.js`: JWS, thumbprints and DPoP proofs on `node:crypto` (no dependencies).
 - `lifecycle/src/integrity.js`: RFC 8785 canonical JSON, Ed25519 receipts, the hash-chained fsynced event log and the pod client (ETag, SHA-256, If-Match). Integrity (ROADMAP phase 3): the service pins what the pod holds and refuses a binding or publish when it has changed (`409 pod changed since pin`).
+- `lifecycle/src/frames.js`: the assetID frame, its continuation log and the `/pod` proxy (ROADMAP phase 4; RealityEngine_CI `docs/CONTINUATIONS_APPROVAL_CHAIN.md` is authoritative). `lifecycle/src/engines.js`: continuation rule 7 against the instance registry (`RE_REGISTRY_URL`).
 - `scripts/grant-assets.js`: gives the lifecycle WebID Read/Write on each person's `assets/` container (run by `up.js`). `scripts/verify-receipt.js`: offline receipt verification.
 - `scripts/accounts.js`: the seeded accounts, the CSS seed and the role list (tests: `scripts/accounts.test.js`).
 - `lifecycle/test/`: `node --test`.

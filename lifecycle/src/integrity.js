@@ -156,6 +156,13 @@ export function podClient({ fetchImpl }) {
       if (!etag) throw new IntegrityError(502, `pod read ${url}: no ETag`);
       return { etag, hash: sha256(bytes), bytes, contentType: r.headers.get('content-type') || 'application/octet-stream' };
     },
+    // A new document only: refused if anything is already there.
+    async create(url, bytes, { contentType }) {
+      const r = await fetchImpl(url, { method: 'PUT', headers: { 'content-type': contentType, 'if-none-match': '*' }, body: bytes });
+      if (r.status === 412) throw new IntegrityError(409, `${url} already exists`);
+      if (!r.ok) throw new IntegrityError(502, `pod create ${url}: ${r.status}`);
+      return { etag: r.headers.get('etag') };
+    },
     async write(url, bytes, { ifMatch, contentType }) {
       if (!ifMatch) throw new IntegrityError(500, 'a pod write needs the pinned ETag');
       const r = await fetchImpl(url, { method: 'PUT', headers: { 'content-type': contentType, 'if-match': ifMatch }, body: bytes });

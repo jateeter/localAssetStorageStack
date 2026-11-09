@@ -157,10 +157,14 @@ export function capabilityIssuer({ keyFile = '', issuer = 'urn:realityengine:lif
   const kid = thumbprint(jwk);
   return {
     jwk: { ...jwk, kid, alg: 'EdDSA', use: 'sig' },
-    issue({ bindingId, scopes }) {
+    // A capability names one binding (`bnd`), or one frame and the continuation
+    // whose step it is for (`frm`, `knt`; ROADMAP phase 4).
+    issue({ bindingId, frameId, continuationId, scopes }) {
       const t = now();
+      const scope = { scope: scopes.join(' ') };
+      const target = frameId ? { frm: frameId, knt: continuationId } : { bnd: bindingId };
       return sign({ alg: 'EdDSA', typ: 'JWT', kid }, {
-        iss: issuer, aud: issuer, sub: AGENT_PRINCIPAL, bnd: bindingId, scope: scopes.join(' '),
+        iss: issuer, aud: issuer, sub: AGENT_PRINCIPAL, ...target, ...scope,
         iat: t, exp: t + ttl, jti: crypto.randomUUID()
       }, privateKey);
     },

@@ -2,6 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { Raw, mountFrames } from './frames.js';
 import { IntegrityError, eventLog, receiptSigner, verifyReceipt } from './integrity.js';
 import { AuthError, capabilityIssuer, isCapability, roleList, serviceTokens, solidOidcVerifier } from './identity.js';
 
@@ -36,7 +37,7 @@ const need = (cond, status, msg) => { if (!cond) throw new HttpError(status, msg
 export class Store {
   constructor(file) {
     this.file = file;
-    this.d = { assets: {}, machines: {}, bindings: {}, proposals: {}, findings: {}, dispositions: {}, receipts: {}, roles: {} };
+    this.d = { assets: {}, machines: {}, bindings: {}, proposals: {}, findings: {}, dispositions: {}, receipts: {}, roles: {}, frames: {}, heads: {} };
     if (file && fs.existsSync(file)) this.d = { ...this.d, ...JSON.parse(fs.readFileSync(file, 'utf8')) };
   }
   save() {
@@ -64,7 +65,10 @@ function validPodUrl(u, allowedOrigin) {
 // answered.
 export function createApp({ tokens, store = new Store(), podOrigin = '', registryFile = '', tls = null,
   verifyPerson = null, rolesFile = '', capabilities = capabilityIssuer(), identityStatus = () => null,
-  pod = null, receipts = receiptSigner(), log = eventLog() }) {
+  pod = null, receipts = receiptSigner(), log = eventLog(),
+  // Whether an engine instance carries a template, for a continuation's rule 7:
+  // 'carries', 'missing' or 'unchecked' (no instance registry configured).
+  engineCheck = async () => 'unchecked' }) {
   const d = () => store.d;
   const receipt = (type, body) => {
     const r = receipts.sign({ id: id('rcpt'), type, issuedAt: now(), ...body });
@@ -183,6 +187,7 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
     const pinned = await pin(a, body);
     applyPin(a, pinned);
     commit({ type: 'revision.pinned', assetId: a.id, by: actor(principal), pinned });
+    onRepin(a.id, actor(principal));
     return [201, a];
   });
   route('GET', '/assets/:id/history', ({ params }) => { asset(params.id); return [200, log.read((e) => e.assetId === params.id)]; });
@@ -290,6 +295,16 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
     commit({ type: 'disposition.recorded', assetId: a.id, dispositionId: x.id, revision: x.revision, decision: x.decision, by: actor(principal) });
     return [201, x];
   });
+  // The assetID frame and its continuations (ROADMAP phase 4, frames.js).
+  // `onRepin` is how a new pin reaches the frames that depend on the asset.
+  let onRepin = () => {};
+  onRepin = mountFrames({
+    route, need, allow, d, commit, receipt, asset, readPod, actor, engineCheck, now, id, sha256, log, capabilities,
+    pod: { create: (...a) => { need(pod, 503, 'the service cannot write pods (no service identity)'); return pod.create(...a); },
+           write: (...a) => { need(pod, 503, 'the service cannot write pods (no service identity)'); return pod.write(...a); } },
+    applyPin: (a, pinned, opts) => { applyPin(a, pinned); onRepin(a.id, 'frame-step', opts); }
+  });
+
   route('GET', '/roles', ({ principal }) => { allow(principal, 'admin'); return [200, roles.all()]; });
   route('PUT', '/roles', ({ body, principal }) => {
     allow(principal, 'admin');
@@ -323,7 +338,9 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
     req.on('data', (c) => { size += c.length; if (size > 1e6) { send(413, { error: 'too large' }); req.destroy(); } else chunks.push(c); });
     req.on('end', async () => {
       try {
-        const path = new URL(req.url, 'http://x').pathname;
+        // Parsed against a fixed base: only the path and query are read.
+        const requestUrl = new URL(req.url, 'https://lifecycle');
+        const path = requestUrl.pathname;
         if (req.method === 'GET' && path === '/health') return send(200, { status: 'ok', identity: identityStatus() });
         // The receipt keys (Ed25519, JWKS): what an offline verifier needs.
         if (req.method === 'GET' && path === '/keys') return send(200, receipts.jwks);
@@ -332,16 +349,23 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
           return send(status, value);
         }
         const principal = await authenticate(req, path);
+        const query = requestUrl.searchParams;
+        // The pod proxy carries a document, not JSON.
+        const raw = Buffer.concat(chunks);
         let body = {};
-        if (chunks.length) { try { body = JSON.parse(Buffer.concat(chunks).toString()); } catch { throw new HttpError(400, 'invalid JSON'); } }
+        if (path !== '/pod' && chunks.length) { try { body = JSON.parse(raw.toString()); } catch { throw new HttpError(400, 'invalid JSON'); } }
         need(body && typeof body === 'object' && !Array.isArray(body), 400, 'JSON object required');
         for (const [m, re, fn] of routes) {
           const match = re.exec(path);
           if (m === req.method && match) {
             // Changes run one at a time: a pod read sits between a change's
             // checks and its commit, and two interleaved there could both pass.
-            const run = () => fn({ params: match.groups || {}, body, principal });
+            const run = () => fn({ params: match.groups || {}, body, principal, query, raw, contentType: req.headers['content-type'] });
             const [s, o] = req.method === 'GET' ? await run() : await serial(run);
+            if (o instanceof Raw) {
+              res.writeHead(s, { 'content-type': o.contentType, 'content-length': o.bytes.length, ...(o.etag ? { etag: o.etag } : {}) });
+              return res.end(o.bytes);
+            }
             return send(s, o);
           }
         }
