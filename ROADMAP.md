@@ -430,6 +430,13 @@ proves it. A hosted check alone does not.
 
 **2. Identity** (A2). Turns on dokieli ↔ CSS sign-in, and the lifecycle
 service's identity on CSS.
+- **Status (2026-11-09): done** (localAssetStorageStack#17). Both verify items
+  pass live. In a real browser, a scripted Solid-OIDC login, then dokieli saves
+  a document in the author's pod (PUT 201), and a fresh session reloads it
+  (an anonymous read gets 401). Against real `assets-css` tokens, a forged
+  `reviewer` field is refused (403), as are replayed and bearer-presented DPoP
+  tokens. A restart keeps every password, the service's client credentials and
+  every WebID.
 - **Registration:** CSS registration is closed. People and reviewers are
   provisioned idempotently.
 - **The lifecycle service:** a WebID and DPoP client credentials, in a secret

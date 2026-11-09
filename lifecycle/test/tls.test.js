@@ -16,7 +16,7 @@ const cert = path.join(dir, 'cert.pem');
 execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:secp384r1', '-nodes', '-sha384',
   '-days', '1', '-subj', '/CN=lifecycle', '-addext', 'subjectAltName=DNS:lifecycle', '-keyout', key, '-out', cert], { stdio: 'ignore' });
 
-const tokens = { registrar: 'reg-token-0123456789' };
+const tokens = { registrar: 'reg-token-0123456789-0123456789-01' };
 let server, port;
 test.before(async () => {
   server = createApp({ tokens, tls: { key: fs.readFileSync(key), cert: fs.readFileSync(cert) } });

@@ -23,10 +23,13 @@ jobs:
       - name: Lifecycle tests
         run: npm test
         working-directory: lifecycle
+      - name: Account provisioning tests
+        run: node --test scripts/*.test.js
       - name: Validate compose
         run: |
           cp .env.example .env
-          sed -i 's/=$/=0123456789abcdef0123/' .env
+          sed -i 's/=$/=0123456789abcdef0123456789abcdef/' .env
+          mkdir -p .secrets && echo '[]' > .secrets/css-seed.json && echo '{}' > .secrets/lifecycle-account.json
           docker compose config -q
       - name: Build images
         run: |
@@ -41,8 +44,11 @@ jobs:
             -subj /CN=localhost -addext subjectAltName=DNS:localhost \
             -keyout "$RUNNER_TEMP/pki/key.pem" -out "$RUNNER_TEMP/pki/cert.pem"
           chmod 644 "$RUNNER_TEMP/pki/key.pem"
+          # No assets-css here: the service serves while its identity retries.
+          echo '{"email":"lifecycle@assets.localhost","password":"x","pod":"lifecycle"}' > "$RUNNER_TEMP/pki/account.json"
           docker run -d --name lc -p 8443:8443 -v "$RUNNER_TEMP/pki:/pki:ro" \
-            -e ADMIN_TOKEN=0123456789abcdef0123 -e TLS_KEY_FILE=/pki/key.pem -e TLS_CERT_FILE=/pki/cert.pem lifecycle
+            -e ADMIN_TOKEN=0123456789abcdef0123456789abcdef -e TLS_KEY_FILE=/pki/key.pem -e TLS_CERT_FILE=/pki/cert.pem \
+            -e CSS_ORIGIN=https://assets-css.localhost:13443 -e SERVICE_ACCOUNT_FILE=/pki/account.json lifecycle
           C=(curl --tlsv1.3 --cacert "$RUNNER_TEMP/pki/cert.pem")
           for i in $(seq 20); do "${C[@]}" -fs https://localhost:8443/health && break; sleep 1; done
           test "$("${C[@]}" -s -o /dev/null -w '%{http_code}' https://localhost:8443/assets)" = 401

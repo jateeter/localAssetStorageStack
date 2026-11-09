@@ -6,13 +6,17 @@
 // 2. Check the fixed ports are free: assets-css 13443 and assets-dokieli 13444
 //    (ROADMAP D7). A taken port is an error that names its holder; the port is
 //    never moved, because a pod's URL includes it.
-// 3. Start the stack, and write runtime/registry.json: this stack's own
+// 3. Provision the accounts assets-css is seeded with (ROADMAP phase 2;
+//    scripts/accounts.js): registration is closed, so the lifecycle service
+//    and the people in ASSETS_PEOPLE are the only accounts.
+// 4. Start the stack, and write runtime/registry.json: this stack's own
 //    service file, not the RealityEngine instance registry.
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { provisionAccounts } from './accounts.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FIXED = { 'assets-css': 13443, 'assets-dokieli': 13444 };
@@ -75,7 +79,33 @@ const allocatePort = () => new Promise((resolve, reject) => {
   });
 });
 
-// --- 3. start ---------------------------------------------------------------
+// --- 3. accounts ----------------------------------------------------------------
+// A pod store that outlived its passwords can't be signed in to: refuse rather
+// than seed accounts CSS will reject as existing.
+const secretsDir = path.join(root, '.secrets');
+const project = JSON.parse(compose(['config', '--format', 'json'])).name;
+const cssVolume = execFileSync('docker', ['volume', 'ls', '-q', '--filter', `label=com.docker.compose.project=${project}`,
+  '--filter', 'label=com.docker.compose.volume=css-data'], { encoding: 'utf8' }).trim();
+if (cssVolume && !fs.existsSync(path.join(secretsDir, 'accounts.json'))) {
+  fail(`the pod store (volume ${cssVolume}) exists but .secrets/accounts.json does not, so its accounts can't be signed in to. `
+    + 'Restore .secrets/, or remove the stack with `docker compose down -v` to start over.');
+}
+// ASSETS_PEOPLE from the environment, else from .env, which compose reads for
+// itself but this script does not.
+const fromDotEnv = (name) => {
+  const file = path.join(root, '.env');
+  if (!fs.existsSync(file)) return undefined;
+  const line = fs.readFileSync(file, 'utf8').split('\n').find((l) => l.startsWith(`${name}=`));
+  return line ? line.slice(name.length + 1).trim().replace(/^(['"])(.*)\1$/, '$2') : undefined;
+};
+let accounts;
+try {
+  accounts = provisionAccounts({ secretsDir, runtimeDir: path.join(root, 'runtime'),
+    peopleSpec: process.env.ASSETS_PEOPLE ?? fromDotEnv('ASSETS_PEOPLE') });
+} catch (e) { fail(e.message); }
+if (accounts.added.length) console.log(`up.js: new accounts: ${accounts.added.join(', ')}`);
+
+// --- 4. start ---------------------------------------------------------------
 const networks = execFileSync('docker', ['network', 'ls', '--filter', 'name=^reality-engine$', '--format', '{{.Name}}'], { cwd: root, encoding: 'utf8' }).trim().split('\n');
 if (!networks.includes('reality-engine')) {
   execFileSync('docker', ['network', 'create', 'reality-engine'], { cwd: root, stdio: 'inherit' });
@@ -112,4 +142,6 @@ fs.renameSync(temporary, destination);
 
 console.log(`up.js: stack service file ${destination}`);
 console.log(`up.js: dokieli ${services['assets-dokieli'].url}, pods ${services['assets-css'].url}, lifecycle https://localhost:${port}/`);
+for (const [webId, roles] of Object.entries(accounts.roles)) console.log(`up.js: ${webId} (${roles.join(', ')})`);
+console.log(`up.js: sign-in passwords are in ${accounts.accountsFile} (0600)`);
 console.log(`up.js: browsers trust the install CA once (owner step): ${re('trust-command').trim()}`);

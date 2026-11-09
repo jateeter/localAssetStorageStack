@@ -2,4 +2,6 @@
 node_modules/
 /runtime/registry.json
 /runtime/pki/
+/.secrets/
+/runtime/roles.json
 .DS_Store

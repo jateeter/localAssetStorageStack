@@ -2,6 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { AuthError, capabilityIssuer, isCapability, roleList, serviceTokens, solidOidcVerifier } from './identity.js';
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const id = (p) => `${p}-${crypto.randomUUID()}`;
@@ -34,8 +35,8 @@ const need = (cond, status, msg) => { if (!cond) throw new HttpError(status, msg
 export class Store {
   constructor(file) {
     this.file = file;
-    this.d = { assets: {}, machines: {}, bindings: {}, proposals: {}, findings: {}, dispositions: {}, receipts: {} };
-    if (file && fs.existsSync(file)) this.d = JSON.parse(fs.readFileSync(file, 'utf8'));
+    this.d = { assets: {}, machines: {}, bindings: {}, proposals: {}, findings: {}, dispositions: {}, receipts: {}, roles: {} };
+    if (file && fs.existsSync(file)) this.d = { ...this.d, ...JSON.parse(fs.readFileSync(file, 'utf8')) };
   }
   save() {
     if (!this.file) return;
@@ -50,7 +51,12 @@ function validPodUrl(u, allowedOrigin) {
   return p.protocol === 'https:' && (!allowedOrigin || p.origin === allowedOrigin);
 }
 
-export function createApp({ tokens, store = new Store(), podOrigin = '', secret = crypto.randomBytes(32), registryFile = '', tls = null }) {
+// Principals (ROADMAP phase 2): `tokens` holds the service tokens (admin,
+// registrar, engine); people come from Solid-OIDC tokens checked by `verifyPerson`
+// (solidOidcVerifier, trusting assets-css) with roles from `roles`; agents carry
+// capability tokens from `capabilities`.
+export function createApp({ tokens, store = new Store(), podOrigin = '', secret = crypto.randomBytes(32), registryFile = '', tls = null,
+  verifyPerson = null, rolesFile = '', capabilities = capabilityIssuer(), identityStatus = () => null }) {
   const d = () => store.d;
   const sign = (o) => crypto.createHmac('sha256', secret).update(JSON.stringify(o)).digest('hex');
   const receipt = (type, body) => {
@@ -63,16 +69,34 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
   const machine = (mid) => { const m = d().machines[mid]; need(m, 404, 'machine not found'); return m; };
   const binding = (bid) => { const b = d().bindings[bid]; need(b, 404, 'binding not found'); return b; };
 
-  const authenticate = (req) => {
+  const serviceRole = serviceTokens(tokens);
+  const roles = roleList({ file: rolesFile, overrides: d().roles });
+
+  // Resolves the caller to one principal: { kind: 'service', roles: [role] },
+  // { kind: 'person', webId, roles } or { kind: 'agent', capability }.
+  const authenticate = async (req, path) => {
     const h = req.headers.authorization || '';
-    const t = h.startsWith('Bearer ') ? h.slice(7) : '';
-    const tb = Buffer.from(sha256(t));
-    for (const [role, tok] of Object.entries(tokens)) {
-      if (tok && crypto.timingSafeEqual(tb, Buffer.from(sha256(tok)))) return role;
+    if (h.startsWith('DPoP ')) {
+      need(verifyPerson, 401, 'Solid-OIDC sign-in is not configured');
+      const url = `${tls ? 'https' : 'http'}://${req.headers.host}${path}`;
+      const { webId } = await verifyPerson({ authorization: h, dpop: req.headers.dpop, method: req.method, url });
+      return { kind: 'person', webId, roles: roles.of(webId) };
     }
-    return null;
+    const t = h.startsWith('Bearer ') ? h.slice(7) : '';
+    need(t, 401, 'unauthorized');
+    if (isCapability(t)) return { kind: 'agent', roles: ['agent'], capability: capabilities.check(t) };
+    const role = serviceRole(t);
+    need(role, 401, 'unauthorized');
+    return { kind: 'service', roles: [role] };
   };
-  const allow = (role, ...roles) => need(role === 'admin' || roles.includes(role), 403, 'forbidden');
+  // `admin` manages roles and nothing else: it implies no other role.
+  const allow = (principal, ...wanted) => need(principal.roles.some((r) => wanted.includes(r)), 403, 'forbidden');
+  // A person's identity comes from the token, never the body: a body naming
+  // someone else is refused.
+  const self = (principal, claimed, field) => {
+    need(claimed === undefined || claimed === null || claimed === principal.webId, 403, `${field} is taken from the sign-in token`);
+    return principal.webId;
+  };
 
   function pin(a, { revision, content, hash }) {
     need(typeof revision === 'string' && revision, 400, 'revision required');
@@ -103,15 +127,15 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
       if (e.code === 'ENOENT' || e instanceof SyntaxError) throw new HttpError(503, 'instance registry unavailable');
       throw e;
     }
-    need(registry?.schemaVersion === 1 && registry.services && typeof registry.services === 'object', 503, 'instance registry unavailable');
+    need([1, 2].includes(registry?.schemaVersion) && registry.services && typeof registry.services === 'object', 503, 'instance registry unavailable');
     return [200, registry];
   };
 
   const routes = [];
   const route = (method, path, fn) => routes.push([method, new RegExp(`^${path.replace(/:(\w+)/g, '(?<$1>[^/]+)')}$`), fn]);
 
-  route('POST', '/assets', ({ body, role }) => {
-    allow(role, 'registrar');
+  route('POST', '/assets', ({ body, principal }) => {
+    allow(principal, 'registrar');
     need(validPodUrl(body.podUrl, podOrigin), 400, 'podUrl invalid or outside configured CSS origin');
     need(body.caseId, 400, 'caseId required');
     const a = { id: id('asset'), podUrl: body.podUrl, caseId: body.caseId, authority: body.authority || null,
@@ -123,15 +147,15 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
   });
   route('GET', '/assets', () => [200, Object.values(d().assets)]);
   route('GET', '/assets/:id', ({ params }) => [200, asset(params.id)]);
-  route('POST', '/assets/:id/revisions', ({ params, body, role }) => {
-    allow(role, 'registrar');
+  route('POST', '/assets/:id/revisions', ({ params, body, principal }) => {
+    allow(principal, 'registrar');
     const a = asset(params.id);
     pin(a, body);
     store.save();
     return [201, a];
   });
-  route('POST', '/assets/:id/machines', ({ params, body, role }) => {
-    allow(role, 'registrar');
+  route('POST', '/assets/:id/machines', ({ params, body, principal }) => {
+    allow(principal, 'registrar');
     const a = asset(params.id);
     const cls = GUARDRAIL_CLASSES[body.guardrailClass || 'review'];
     need(cls, 400, 'unknown guardrail class');
@@ -142,8 +166,8 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
     return [201, m];
   });
   // Bundle (triggers, PE sources, context policy, manifest) verified before observations are admitted.
-  route('POST', '/machines/:id/verify', ({ params, body, role }) => {
-    allow(role, 'registrar');
+  route('POST', '/machines/:id/verify', ({ params, body, principal }) => {
+    allow(principal, 'registrar');
     const m = machine(params.id);
     need(m.status === 'provisioning', 409, 'machine not provisioning');
     need(body.manifestHash && body.manifestHash === sha256(JSON.stringify(body.manifest || {})), 400, 'manifest hash mismatch');
@@ -152,8 +176,8 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
     store.save();
     return [200, m];
   });
-  route('POST', '/machines/:id/revoke', ({ params, role }) => {
-    allow(role, 'registrar');
+  route('POST', '/machines/:id/revoke', ({ params, principal }) => {
+    allow(principal, 'registrar');
     const m = machine(params.id);
     m.revoked = true; m.status = 'revoked'; m.generation += 1;
     store.save();
@@ -162,8 +186,8 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
   route('GET', '/machines/:id', ({ params }) => [200, machine(params.id)]);
 
   // Step-binding receipt: ties the ISRE snapshot to the resulting OSRE recognition and exact asset revision.
-  route('POST', '/machines/:id/bindings', ({ params, body, role }) => {
-    allow(role, 'engine');
+  route('POST', '/machines/:id/bindings', ({ params, body, principal }) => {
+    allow(principal, 'engine');
     const m = machine(params.id);
     const a = asset(m.assetId);
     need(body.isreSnapshot && body.osreOutput, 400, 'isreSnapshot and osreOutput required');
@@ -178,12 +202,15 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
     b.receipt = receipt('step-binding', { bindingId: b.id, machineId: m.id, revision: b.revision, isre: sha256(JSON.stringify(b.isreSnapshot)), osre: sha256(JSON.stringify(b.osreOutput)) }).id;
     d().bindings[b.id] = b;
     store.save();
-    return [201, b];
+    // The agent's capability for this binding (D8). It is returned once, to the
+    // engine that dispatches the agent, and never stored or served again.
+    return [201, { ...b, capability: capabilities.issue({ bindingId: b.id, scopes: b.contextGrant.scopes }) }];
   });
   route('GET', '/bindings/:id', ({ params }) => [200, binding(params.id)]);
 
-  route('POST', '/bindings/:id/proposals', ({ params, body, role }) => {
-    allow(role, 'agent');
+  route('POST', '/bindings/:id/proposals', ({ params, body, principal }) => {
+    allow(principal, 'agent');
+    need(principal.capability.bnd === params.id, 403, 'capability is for another binding');
     const b = binding(params.id);
     const m = machine(b.machineId);
     checkBinding(b, m, asset(m.assetId));
@@ -203,30 +230,41 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
   });
 
   // dokieli annotations become revision-specific findings.
-  route('POST', '/assets/:id/annotations', ({ params, body, role }) => {
-    allow(role, 'reviewer');
+  route('POST', '/assets/:id/annotations', ({ params, body, principal }) => {
+    allow(principal, 'reviewer');
     const a = asset(params.id);
     need(body.revision === a.current.revision, 409, 'annotation targets a stale revision');
     need(typeof body.body === 'string' && body.body, 400, 'body required');
-    const f = { id: id('finding'), assetId: a.id, revision: a.current.revision, author: body.author || null, motivation: body.motivation || 'commenting', body: body.body, target: body.target || null, createdAt: now() };
+    const f = { id: id('finding'), assetId: a.id, revision: a.current.revision, author: self(principal, body.author, 'author'), motivation: body.motivation || 'commenting', body: body.body, target: body.target || null, createdAt: now() };
     d().findings[f.id] = f;
     store.save();
     return [201, f];
   });
   route('GET', '/assets/:id/annotations', ({ params }) => [200, Object.values(d().findings).filter((f) => f.assetId === params.id)]);
-  route('POST', '/assets/:id/dispositions', ({ params, body, role }) => {
-    allow(role, 'reviewer');
+  route('POST', '/assets/:id/dispositions', ({ params, body, principal }) => {
+    allow(principal, 'reviewer');
     const a = asset(params.id);
     need(['accept', 'reject', 'rework', 'approve'].includes(body.decision), 400, 'invalid decision');
     need(body.revision === a.current.revision, 409, 'disposition targets a stale revision');
-    const prior = Object.values(d().dispositions).find((x) => x.assetId === a.id && x.revision === a.current.revision && x.reviewer === body.reviewer);
+    const reviewer = self(principal, body.reviewer, 'reviewer');
+    const prior = Object.values(d().dispositions).find((x) => x.assetId === a.id && x.revision === a.current.revision && x.reviewer === reviewer);
     need(!prior, 409, 'reviewer already dispositioned this revision');
-    need(body.reviewer, 400, 'reviewer required');
-    const x = { id: id('disp'), assetId: a.id, revision: a.current.revision, reviewer: body.reviewer, decision: body.decision, findingIds: body.findingIds || [], createdAt: now() };
+    const x = { id: id('disp'), assetId: a.id, revision: a.current.revision, reviewer, decision: body.decision, findingIds: body.findingIds || [], createdAt: now() };
     d().dispositions[x.id] = x;
     store.save();
     return [201, x];
   });
+  route('GET', '/roles', ({ principal }) => { allow(principal, 'admin'); return [200, roles.all()]; });
+  route('PUT', '/roles', ({ body, principal }) => {
+    allow(principal, 'admin');
+    roles.set(body.webId, body.roles);
+    store.save();
+    return [200, { webId: body.webId, roles: roles.of(body.webId) }];
+  });
+  // Whoever is calling, as this service sees them.
+  route('GET', '/whoami', ({ principal }) => [200, principal.kind === 'agent'
+    ? { kind: 'agent', principal: principal.capability.sub, binding: principal.capability.bnd }
+    : { kind: principal.kind, webId: principal.webId, roles: principal.roles }]);
   route('GET', '/receipts/:id', ({ params }) => {
     const r = d().receipts[params.id];
     need(r, 404, 'receipt not found');
@@ -244,29 +282,28 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
     const chunks = [];
     let size = 0;
     req.on('data', (c) => { size += c.length; if (size > 1e6) { send(413, { error: 'too large' }); req.destroy(); } else chunks.push(c); });
-    req.on('end', () => {
+    req.on('end', async () => {
       try {
         const path = new URL(req.url, 'http://x').pathname;
-        if (req.method === 'GET' && path === '/health') return send(200, { status: 'ok' });
+        if (req.method === 'GET' && path === '/health') return send(200, { status: 'ok', identity: identityStatus() });
         if (req.method === 'GET' && path === '/registry') {
           const [status, value] = readRegistry();
           return send(status, value);
         }
-        const role = authenticate(req);
-        need(role, 401, 'unauthorized');
+        const principal = await authenticate(req, path);
         let body = {};
         if (chunks.length) { try { body = JSON.parse(Buffer.concat(chunks).toString()); } catch { throw new HttpError(400, 'invalid JSON'); } }
         need(body && typeof body === 'object' && !Array.isArray(body), 400, 'JSON object required');
         for (const [m, re, fn] of routes) {
           const match = re.exec(path);
           if (m === req.method && match) {
-            const [s, o] = fn({ params: match.groups || {}, body, role });
+            const [s, o] = fn({ params: match.groups || {}, body, principal });
             return send(s, o);
           }
         }
         throw new HttpError(404, 'not found');
       } catch (e) {
-        if (e instanceof HttpError) return send(e.status, { error: e.message });
+        if (e instanceof HttpError || e instanceof AuthError) return send(e.status, { error: e.message });
         console.error(e);
         send(500, { error: 'internal error' });
       }
