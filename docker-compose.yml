@@ -91,6 +91,10 @@ services:
       CSS_ORIGIN: https://assets-css.localhost:13443
       REGISTRY_FILE: /registry/registry.json
       ROLES_FILE: /registry/roles.json
+      # The RealityEngine instance registry, for continuation rule 7 (an engine
+      # that no longer carries a template takes the escape path). Unset, resumes
+      # report engineCheck "unchecked".
+      RE_REGISTRY_URL: ${RE_REGISTRY_URL:-}
       SERVICE_ACCOUNT_FILE: /run/secrets/lifecycle-account
       TLS_KEY_FILE: /pki/self/key.pem
       TLS_CERT_FILE: /pki/self/chain.pem

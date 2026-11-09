@@ -474,6 +474,21 @@ service's identity on CSS.
 
 **4. The assetID frame with continuations** (localAssetStorageStack#13; A4,
 A5). The core of the integration.
+- **Status (2026-11-09): done** (localAssetStorageStack#19). Unit tests cover
+  every continuation rule named below, plus the IFRS chain end to end, the
+  `/pod` proxy and rule 7 against the instance registry.
+- **Live, against real CSS documents, tokens and ETags:**
+  - a frame pinned to what the pod holds, with its pointer in the pod;
+  - an agent reading and writing only its own frame's document through
+    `/pod`, under `If-Match`;
+  - the downstream frame going STALE;
+  - the preparer refused and a reviewer approving with a real Solid-OIDC
+    token, and a replayed approval refused;
+  - termination closing the head;
+  - an abandon receipt that verifies offline.
+- **Not yet wired:** rule 7 answers `unchecked` until phase 11 gives the
+  service the instance registry. The IFRS keys are the case keys; the IFRS
+  machines' own document templates are phase 6's source mapping.
 - **The frame:**
   - `documents`: tagged URIs with pinned revisions, permissions, authorities
     and identifications;

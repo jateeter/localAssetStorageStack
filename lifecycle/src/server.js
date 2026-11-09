@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { createApp, Store } from './app.js';
 import { MIN_SERVICE_TOKEN, capabilityIssuer, serviceIdentity, solidOidcVerifier } from './identity.js';
 import { IntegrityError, eventLog, podClient, receiptSigner } from './integrity.js';
+import { registryEngineCheck } from './engines.js';
 
 const fail = (message) => { console.error(message); process.exit(1); };
 
@@ -60,7 +61,13 @@ const server = createApp({
     }
   }),
   receipts: receiptSigner({ keyFile: `${dataDir}/receipt-key.pem` }),
-  log: eventLog({ file: `${dataDir}/events.jsonl` })
+  log: eventLog({ file: `${dataDir}/events.jsonl` }),
+  // Continuation rule 7, against the RealityEngine instance registry when one
+  // is configured (ROADMAP phase 11 supplies it); 'unchecked' otherwise.
+  engineCheck: registryEngineCheck({
+    registryUrl: process.env.RE_REGISTRY_URL || '',
+    keyFile, certFile, caFile: process.env.NODE_EXTRA_CA_CERTS || ''
+  })
 });
 server.listen(Number(process.env.PORT || 8443), '0.0.0.0');
 
