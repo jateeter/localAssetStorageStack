@@ -11,6 +11,8 @@
 //    and the people in ASSETS_PEOPLE are the only accounts.
 // 4. Start the stack, and write runtime/registry.json: this stack's own
 //    service file, not the RealityEngine instance registry.
+// 5. Grant the lifecycle service read and write on each person's assets/
+//    container (scripts/grant-assets.js; ROADMAP phase 3).
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
@@ -142,6 +144,13 @@ fs.renameSync(temporary, destination);
 
 console.log(`up.js: stack service file ${destination}`);
 console.log(`up.js: dokieli ${services['assets-dokieli'].url}, pods ${services['assets-css'].url}, lifecycle https://localhost:${port}/`);
+// --- 5. the lifecycle service's access to workflow documents ------------------------
+try {
+  execFileSync(process.execPath, ['--dns-result-order=ipv4first', path.join(root, 'scripts', 'grant-assets.js')], {
+    cwd: root, stdio: 'inherit', env: { ...process.env, NODE_EXTRA_CA_CERTS: css.ca }
+  });
+} catch { fail('granting the lifecycle service access to the assets/ containers failed (above)'); }
+
 for (const [webId, roles] of Object.entries(accounts.roles)) console.log(`up.js: ${webId} (${roles.join(', ')})`);
 console.log(`up.js: sign-in passwords are in ${accounts.accountsFile} (0600)`);
 console.log(`up.js: browsers trust the install CA once (owner step): ${re('trust-command').trim()}`);

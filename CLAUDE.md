@@ -51,6 +51,8 @@ Secrets live in `.secrets/` (gitignored, 0600), never under `runtime/`, which th
   service file, not the instance registry; gitignored runtime state.
 - `lifecycle/src/app.js`: routes, store and receipts.
 - `lifecycle/src/identity.js`: the Solid-OIDC/DPoP verifier, the role list, service tokens, capability tokens and the service's own CSS identity. `lifecycle/src/jose.js`: JWS, thumbprints and DPoP proofs on `node:crypto` (no dependencies).
+- `lifecycle/src/integrity.js`: RFC 8785 canonical JSON, Ed25519 receipts, the hash-chained fsynced event log and the pod client (ETag, SHA-256, If-Match). Integrity (ROADMAP phase 3): the service pins what the pod holds and refuses a binding or publish when it has changed (`409 pod changed since pin`).
+- `scripts/grant-assets.js`: gives the lifecycle WebID Read/Write on each person's `assets/` container (run by `up.js`). `scripts/verify-receipt.js`: offline receipt verification.
 - `scripts/accounts.js`: the seeded accounts, the CSS seed and the role list (tests: `scripts/accounts.test.js`).
 - `lifecycle/test/`: `node --test`.
 - `css/config.json`: CSS configuration (file storage, HTTPS server factory).
@@ -65,7 +67,7 @@ Secrets live in `.secrets/` (gitignored, 0600), never under `runtime/`, which th
 nvm use                      # Node from .nvmrc, never the terminal default
 cd lifecycle && npm test     # lifecycle tests
 node --test scripts/*.test.js  # account provisioning tests
-cp .env.example .env         # service tokens (>= 32 bytes), RECEIPT_SECRET, optional ASSETS_PEOPLE
+cp .env.example .env         # service tokens (>= 32 bytes), optional ASSETS_PEOPLE
 node scripts/up.js           # start; replaces `docker compose up -d --build`
 ```
 

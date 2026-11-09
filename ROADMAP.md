@@ -453,6 +453,16 @@ service's identity on CSS.
   - a forged `reviewer` field is refused.
 
 **3. Integrity** (A3). Turns on lifecycle ↔ CSS reads and writes.
+- **Status (2026-11-09): done** (localAssetStorageStack#18). Verified live in a
+  real browser. The author saves a document in dokieli and the registrar
+  registers it, so the service reads and pins it (ETag and SHA-256). A binding
+  is made. The author edits and saves in dokieli, and the next binding is
+  refused with `409 pod changed since pin`. The step-binding receipt verifies
+  offline with `GET /keys` alone, and a tampered one does not. A private
+  document outside `assets/` can't be pinned (409). After a restart, the event
+  log reopens with its chain intact.
+- **Access:** each person's `assets/` container grants the lifecycle WebID
+  Read/Write (`scripts/grant-assets.js`). Workflow documents are kept there.
 - **Pinning:** the service reads the pod itself and records the ETag and the
   SHA-256 of the bytes; writes carry `If-Match`.
 - **History:** an append-only, fsynced event log.

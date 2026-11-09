@@ -22,6 +22,15 @@ Passwords are generated once, into `.secrets/accounts.json` (gitignored, 0600). 
 
 People sign in to dokieli with **Solid-OIDC** against `assets-css`: in dokieli, Sign in → Sign in with Solid → `https://assets-css.localhost:13443/`. After that, dokieli reads and writes their pod directly. CSS answers CORS only for the dokieli origin.
 
+## Integrity
+
+The lifecycle service pins **what the pod holds**, never what it is sent (ROADMAP phase 3):
+- **Pinning.** Registering an asset or a revision makes the service read the document itself, with its own DPoP identity. It records the `ETag` and the SHA-256 of the exact bytes. A registrar may send the `hash` it expects, which must match (`409` otherwise). It may not send `content`.
+- **Before every binding, and before publish,** the service reads the document again. A changed `ETag` or hash is refused with `409 pod changed since pin`. Pin the edit as a new revision to carry on. Writes carry `If-Match: <pinned ETag>`.
+- **Access.** `up.js` gives each person an `assets/` container (`scripts/grant-assets.js`). Its ACL gives the owner Read/Write/Control and the lifecycle WebID Read/Write, on the container and everything in it. Workflow documents are kept there. The rest of a pod stays private, and the service can't pin it (`409 … cannot read`).
+- **History.** Every change is appended to `/data/events.jsonl` and fsynced before it is answered. Each line is chained to the one before by SHA-256, so a rewritten past is detected; the service refuses to start on a broken log. Read an asset's history at `GET /assets/:id/history`.
+- **Receipts** are Ed25519 over the RFC 8785 canonical form. The public key is at `GET /keys` (open). Verify one offline with `node scripts/verify-receipt.js receipt.json keys.json`.
+
 All services join the external-by-name Docker network `reality-engine`, so localAIStack / localOpenClawStack services can reach them at these stable container addresses. Create the network once if it does not already exist:
 
 ```
@@ -30,7 +39,7 @@ docker network create reality-engine
 
 ## Run
 ```
-cp .env.example .env   # fill in the service tokens (>= 32 bytes) and RECEIPT_SECRET; optionally ASSETS_PEOPLE
+cp .env.example .env   # fill in the service tokens (>= 32 bytes); optionally ASSETS_PEOPLE
 node scripts/up.js
 ```
 
@@ -65,7 +74,9 @@ Routes:
 - `POST /assets/:id/dispositions` (reviewer) – decisions by the caller's WebID, one per reviewer per revision
 - `GET|PUT /roles` (admin) – the role list; `PUT` takes `{ webId, roles }` and persists over `runtime/roles.json`
 - `GET /whoami` – the caller as this service sees them
-- `GET /receipts/:id`, `POST /receipts/:id/verify`
+- `GET /assets/:id/history` – the asset's events from the append-only log
+- `GET /keys` (open) – the receipt keys (JWKS)
+- `GET /receipts/:id`, `POST /receipts/:id/verify` – the same check `scripts/verify-receipt.js` makes offline
 
 Runtime integration with ISRE/OSRE, PE, and OpenClaw is pending; this repo provides the contracts and service.
 
