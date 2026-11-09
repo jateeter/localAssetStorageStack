@@ -12,6 +12,16 @@ A local instantiation of the [dokieli](https://dokieli.github.io/) asset managem
 
 lifecycle → `assets-css` is TLS 1.3 **without mTLS**, because CSS does not verify client certificates. That is a recorded, owner-accepted deficiency (RealityEngine_CI `config/transport-inventory.json`). Solid-OIDC with DPoP-bound tokens authenticates the lifecycle service instead (ROADMAP phase 2).
 
+## Identity
+
+Registration on `assets-css` is **closed** (ROADMAP phase 2): nobody can create an account or a pod from the web. The only accounts are the ones `up.js` seeds:
+- **`lifecycle`**: the lifecycle service's own WebID. At start the service signs in with its seeded password, creates DPoP client credentials once, keeps them on its data volume (0600) and reports them on `/health` (`identity.status: ready`).
+- **People**, from `ASSETS_PEOPLE` (`name:role[+role],...`, default `author:author,reviewer:reviewer`). Each gets a pod and a WebID, `https://assets-css.localhost:13443/<name>/profile/card#me`, and the roles listed. The roles are written to `runtime/roles.json`, which the lifecycle service reads at start.
+
+Passwords are generated once, into `.secrets/accounts.json` (gitignored, 0600). A rerun keeps them and seeds anyone newly added to `ASSETS_PEOPLE`. Removing someone from it takes away their roles but keeps their pod. If the pod store outlives `.secrets/`, `up.js` refuses to start: restore `.secrets/`, or start over with `docker compose down -v`.
+
+People sign in to dokieli with **Solid-OIDC** against `assets-css`: in dokieli, Sign in → Sign in with Solid → `https://assets-css.localhost:13443/`. After that, dokieli reads and writes their pod directly. CSS answers CORS only for the dokieli origin.
+
 All services join the external-by-name Docker network `reality-engine`, so localAIStack / localOpenClawStack services can reach them at these stable container addresses. Create the network once if it does not already exist:
 
 ```
@@ -20,14 +30,15 @@ docker network create reality-engine
 
 ## Run
 ```
-cp .env.example .env   # fill in tokens (>=16 chars) and RECEIPT_SECRET
+cp .env.example .env   # fill in the service tokens (>= 32 bytes) and RECEIPT_SECRET; optionally ASSETS_PEOPLE
 node scripts/up.js
 ```
 
 `node scripts/up.js` replaces `docker compose up -d --build`. It needs RealityEngine_CI checked out beside this repository, or `RE_PKI` pointing at its `scripts/lib/re_pki.py`. It:
 1. issues the three services' certificates from the suite's PKI (lane `$RE_PKI_LANE`, default `native`) and links them under `runtime/pki/` (gitignored), where the services mount them read-only;
 2. checks that 13443 and 13444 are free, and fails naming the holder if not;
-3. starts the stack and waits for every healthcheck. Each healthcheck verifies its service's certificate against the install CA.
+3. provisions the seeded accounts and the role list (see Identity);
+4. starts the stack and waits for every healthcheck. Each healthcheck verifies its service's certificate against the install CA.
 
 Other compose commands (`ps`, `logs`, `exec`, `down`) work as usual. All ports are bound to `127.0.0.1`.
 
@@ -35,16 +46,25 @@ The script then writes `runtime/registry.json`, this stack's own service file (n
 
 **Trusting the CA.** Browsers need the install CA once; that is the owner's step, and `up.js` prints the command. Tools must speak TLS 1.3: macOS's `/usr/bin/curl` (SecureTransport) cannot, so use Homebrew's curl (`/opt/homebrew/opt/curl/bin/curl --cacert …`).
 
-## Lifecycle API (Bearer-token auth; roles: registrar, engine, agent, reviewer, admin)
+## Lifecycle API
+
+Every caller is one of three kinds of principal (ROADMAP phase 2):
+- **people**: `Authorization: DPoP <token>` plus a `DPoP` proof. The token must come from `assets-css`, be DPoP-bound (`cnf.jkt`), be fresh, and have `aud` including `solid`. The proof must be for this method and URL and is accepted once. The principal is the token's WebID, with roles (`author`, `reviewer`) from the role list. A body field naming a person (`reviewer`, `author`) is refused unless it names the caller.
+- **services**: `Authorization: Bearer <service token>`, each token at least 32 bytes. `registrar` registers assets, `engine` creates bindings, and `admin` manages roles and nothing else.
+- **agents**: `Authorization: Bearer <capability>`, an EdDSA JWT this service issues for one binding (D8). It is returned once, in the binding's creation response, and is valid only for that binding's proposals. Agents have no WebID.
+
+Routes:
 - `GET /health` (open)
 - `GET /registry` (open; the stack's service addresses and the lifecycle host port)
 - `POST /assets` / `GET /assets[/:id]` – register a CSS POD document; pins revision, hash, case, dependencies, authority (`podUrl` must be on `CSS_ORIGIN`)
 - `POST /assets/:id/revisions` – pin new revision (existing machines become stale)
 - `POST /assets/:id/machines` – instantiate a review machine from a guardrail class; `POST /machines/:id/verify` verifies the manifest hash before admission; `POST /machines/:id/revoke`
-- `POST /machines/:id/bindings` (engine) – step-binding receipt connecting ISRE snapshot, OSRE output, exact revision, generation and scoped context grant; stale revision/generation rejected
-- `POST /bindings/:id/proposals` (agent) – immutable proposal, validated, committed with signed receipt
-- `POST|GET /assets/:id/annotations` – dokieli annotations as revision-specific findings
-- `POST /assets/:id/dispositions` – reviewer decisions (one per reviewer per revision)
+- `POST /machines/:id/bindings` (engine) – step-binding receipt connecting ISRE snapshot, OSRE output, exact revision, generation and scoped context grant, plus the agent's `capability`; stale revision/generation rejected
+- `POST /bindings/:id/proposals` (agent, with that binding's capability) – immutable proposal, validated, committed with signed receipt
+- `POST|GET /assets/:id/annotations` (reviewer) – dokieli annotations as revision-specific findings, authored by the caller's WebID
+- `POST /assets/:id/dispositions` (reviewer) – decisions by the caller's WebID, one per reviewer per revision
+- `GET|PUT /roles` (admin) – the role list; `PUT` takes `{ webId, roles }` and persists over `runtime/roles.json`
+- `GET /whoami` – the caller as this service sees them
 - `GET /receipts/:id`, `POST /receipts/:id/verify`
 
 Runtime integration with ISRE/OSRE, PE, and OpenClaw is pending; this repo provides the contracts and service.
@@ -52,4 +72,4 @@ Runtime integration with ISRE/OSRE, PE, and OpenClaw is pending; this repo provi
 Known gaps and the plan to close them: [ROADMAP.md](ROADMAP.md), from the review in `docs/localAssetStorageStack Gaps.pdf`.
 
 ## Test
-`cd lifecycle && npm test` (CI also validates compose and smoke-tests the container).
+`cd lifecycle && npm test` and `node --test scripts/*.test.js` (CI also validates compose and smoke-tests the container).

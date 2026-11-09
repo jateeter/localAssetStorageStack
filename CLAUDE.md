@@ -1,6 +1,6 @@
 # localAssetStorageStack Guidance
 
-Last reviewed: 2026-11-07
+Last reviewed: 2026-11-09
 
 See `/Users/johnt/workspace/GitHub/CLAUDE.md` for the integrated application
 map. Update both this file and the root map when the stack's services, its
@@ -13,6 +13,17 @@ Local dokieli asset storage for the RealityEngine suite, in the release from
 `reality-engine` Docker network:
 
 Every link is **TLS 1.3** (RealityEngine_CI#668, ROADMAP phase 1): certificates from RealityEngine_CI `scripts/lib/re_pki.py`, no plaintext listener, `https` pod URLs only. lifecycle → `assets-css` has no mTLS because CSS can't verify client certificates (an owner-accepted deficiency).
+
+**Identity** (ROADMAP phase 2): `assets-css` registration is closed, and the only accounts are seeded by `up.js` (`scripts/accounts.js`):
+- the lifecycle service's own WebID;
+- the people in `ASSETS_PEOPLE`.
+
+Secrets live in `.secrets/` (gitignored, 0600), never under `runtime/`, which the lifecycle service mounts. The lifecycle API takes:
+- people from Solid-OIDC DPoP tokens issued by `assets-css`, with roles from `runtime/roles.json`;
+- services by tokens of at least 32 bytes;
+- agents by per-binding EdDSA capability tokens.
+
+`admin` implies no other role.
 
 - `assets-css` at `https://assets-css.localhost:13443/` (fixed, D7): a Solid Community Server holding the document pods. **It is one of
   several CSS instances in the suite, each at its own address.** It is not
@@ -39,6 +50,8 @@ Every link is **TLS 1.3** (RealityEngine_CI#668, ROADMAP phase 1): certificates 
   port, starts the stack and writes `runtime/registry.json`: the stack's own
   service file, not the instance registry; gitignored runtime state.
 - `lifecycle/src/app.js`: routes, store and receipts.
+- `lifecycle/src/identity.js`: the Solid-OIDC/DPoP verifier, the role list, service tokens, capability tokens and the service's own CSS identity. `lifecycle/src/jose.js`: JWS, thumbprints and DPoP proofs on `node:crypto` (no dependencies).
+- `scripts/accounts.js`: the seeded accounts, the CSS seed and the role list (tests: `scripts/accounts.test.js`).
 - `lifecycle/test/`: `node --test`.
 - `css/config.json`: CSS configuration (file storage, HTTPS server factory).
 - `ROADMAP.md`: the plan that answers the gaps review
@@ -51,7 +64,8 @@ Every link is **TLS 1.3** (RealityEngine_CI#668, ROADMAP phase 1): certificates 
 ```bash
 nvm use                      # Node from .nvmrc, never the terminal default
 cd lifecycle && npm test     # lifecycle tests
-cp .env.example .env         # then fill in tokens (>= 16 chars) and RECEIPT_SECRET
+node --test scripts/*.test.js  # account provisioning tests
+cp .env.example .env         # service tokens (>= 32 bytes), RECEIPT_SECRET, optional ASSETS_PEOPLE
 node scripts/up.js           # start; replaces `docker compose up -d --build`
 ```
 

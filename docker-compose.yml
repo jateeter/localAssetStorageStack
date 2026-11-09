@@ -8,6 +8,12 @@
 # the services mount read-only. Other compose commands (ps, logs, exec, down)
 # work as usual.
 #
+# Identity (ROADMAP phase 2): assets-css registration is closed. up.js writes
+# the seed of accounts and pods that CSS reads at start and the lifecycle
+# service's own account, both in .secrets/ (gitignored, 0600, and outside
+# runtime/, which the lifecycle mounts), and the role list (runtime/roles.json)
+# that attaches person roles to WebIDs.
+#
 # Every link is TLS 1.3 (RealityEngine_CI#668, ROADMAP D2). The two user-facing
 # services have fixed addresses, the same inside and outside the containers
 # (ROADMAP D7): https://assets-css.localhost:13443/ and
@@ -34,6 +40,8 @@ services:
       - "/pki/self/key.pem"
       - "--httpsCert"
       - "/pki/self/chain.pem"
+      - "--seedConfig"
+      - "/run/secrets/css-seed"
     environment:
       # TLS 1.3 only, with the profile's suites (RealityEngine_CI config/transport-profile.json).
       NODE_OPTIONS: "--tls-min-v1.3 --tls-cipher-list=TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256"
@@ -43,6 +51,7 @@ services:
       - ./css/config.json:/config/config.json:ro
       - ./runtime/pki/assets-css:/pki/self:ro
       - ./runtime/pki/ca.crt:/pki/ca.crt:ro
+    secrets: [css-seed]
     ports:
       - "127.0.0.1:13443:13443"
     networks:
@@ -79,11 +88,11 @@ services:
       ADMIN_TOKEN: ${ADMIN_TOKEN:?set in .env}
       REGISTRAR_TOKEN: ${REGISTRAR_TOKEN:?set in .env}
       ENGINE_TOKEN: ${ENGINE_TOKEN:?set in .env}
-      AGENT_TOKEN: ${AGENT_TOKEN:?set in .env}
-      REVIEWER_TOKEN: ${REVIEWER_TOKEN:?set in .env}
       RECEIPT_SECRET: ${RECEIPT_SECRET:?set in .env}
       CSS_ORIGIN: https://assets-css.localhost:13443
       REGISTRY_FILE: /registry/registry.json
+      ROLES_FILE: /registry/roles.json
+      SERVICE_ACCOUNT_FILE: /run/secrets/lifecycle-account
       TLS_KEY_FILE: /pki/self/key.pem
       TLS_CERT_FILE: /pki/self/chain.pem
       # Outbound calls (assets-css) verify against the install CA.
@@ -93,6 +102,7 @@ services:
       - ./runtime:/registry:ro
       - ./runtime/pki/lifecycle:/pki/self:ro
       - ./runtime/pki/ca.crt:/pki/ca.crt:ro
+    secrets: [lifecycle-account]
     ports:
       - target: 8443
         published: "${LIFECYCLE_HOST_PORT:-0}"
@@ -101,6 +111,12 @@ services:
     depends_on:
       assets-css:
         condition: service_healthy
+
+secrets:
+  css-seed:
+    file: ./.secrets/css-seed.json
+  lifecycle-account:
+    file: ./.secrets/lifecycle-account.json
 
 volumes:
   css-data:
