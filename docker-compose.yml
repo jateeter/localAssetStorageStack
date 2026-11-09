@@ -88,7 +88,6 @@ services:
       ADMIN_TOKEN: ${ADMIN_TOKEN:?set in .env}
       REGISTRAR_TOKEN: ${REGISTRAR_TOKEN:?set in .env}
       ENGINE_TOKEN: ${ENGINE_TOKEN:?set in .env}
-      RECEIPT_SECRET: ${RECEIPT_SECRET:?set in .env}
       CSS_ORIGIN: https://assets-css.localhost:13443
       REGISTRY_FILE: /registry/registry.json
       ROLES_FILE: /registry/roles.json

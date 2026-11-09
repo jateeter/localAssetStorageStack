@@ -2,6 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { IntegrityError, eventLog, receiptSigner, verifyReceipt } from './integrity.js';
 import { AuthError, capabilityIssuer, isCapability, roleList, serviceTokens, solidOidcVerifier } from './identity.js';
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
@@ -55,15 +56,29 @@ function validPodUrl(u, allowedOrigin) {
 // registrar, engine); people come from Solid-OIDC tokens checked by `verifyPerson`
 // (solidOidcVerifier, trusting assets-css) with roles from `roles`; agents carry
 // capability tokens from `capabilities`.
-export function createApp({ tokens, store = new Store(), podOrigin = '', secret = crypto.randomBytes(32), registryFile = '', tls = null,
-  verifyPerson = null, rolesFile = '', capabilities = capabilityIssuer(), identityStatus = () => null }) {
+//
+// Integrity (ROADMAP phase 3): `pod` (integrity.podClient) is how the service
+// reads and writes pod documents itself; `receipts` (integrity.receiptSigner)
+// signs every receipt with Ed25519 over RFC 8785; `log` (integrity.eventLog) is
+// the append-only, fsynced history every change is written to before it is
+// answered.
+export function createApp({ tokens, store = new Store(), podOrigin = '', registryFile = '', tls = null,
+  verifyPerson = null, rolesFile = '', capabilities = capabilityIssuer(), identityStatus = () => null,
+  pod = null, receipts = receiptSigner(), log = eventLog() }) {
   const d = () => store.d;
-  const sign = (o) => crypto.createHmac('sha256', secret).update(JSON.stringify(o)).digest('hex');
   const receipt = (type, body) => {
-    const r = { id: id('rcpt'), type, issuedAt: now(), ...body };
-    r.signature = sign(r);
+    const r = receipts.sign({ id: id('rcpt'), type, issuedAt: now(), ...body });
     d().receipts[r.id] = r;
     return r;
+  };
+  // Who did it, for the history.
+  const actor = (p) => (p.kind === 'person' ? p.webId : p.kind === 'agent' ? `${p.capability.sub}:${p.capability.bnd}` : p.roles[0]);
+  // The history first (fsynced), then the state snapshot: a crash between the
+  // two leaves an event the snapshot lacks, never a change with no history.
+  const commit = (event) => { log.append(event); store.save(); };
+  const readPod = async (url) => {
+    need(pod, 503, 'the service cannot read pods (no service identity)');
+    return pod.read(url);
   };
   const asset = (aid) => { const a = d().assets[aid]; need(a, 404, 'asset not found'); return a; };
   const machine = (mid) => { const m = d().machines[mid]; need(m, 404, 'machine not found'); return m; };
@@ -98,16 +113,30 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
     return principal.webId;
   };
 
-  function pin(a, { revision, content, hash }) {
+  // Pins a revision from the pod itself (ROADMAP finding 2): the service reads
+  // the document and records the ETag and the SHA-256 of the exact bytes. A
+  // registrar may name the hash it expects; it must match what the pod holds.
+  // Nothing the registrar sends is taken as the document.
+  async function pin(a, { revision, content, hash }) {
     need(typeof revision === 'string' && revision, 400, 'revision required');
-    need(content !== undefined || /^[0-9a-f]{64}$/.test(hash || ''), 400, 'content or sha256 hash required');
-    const h = content !== undefined ? sha256(String(content)) : hash;
-    need(!hash || h === hash, 400, 'hash does not match content');
-    a.revisions.push({ revision, hash: h, pinnedAt: now() });
-    a.current = { revision, hash: h };
+    need(content === undefined, 400, 'content is read from the pod, never sent');
+    need(hash === undefined || /^[0-9a-f]{64}$/.test(hash), 400, 'hash must be a SHA-256 hex digest');
+    const read = await readPod(a.podUrl);
+    need(hash === undefined || hash === read.hash, 409, 'hash does not match the pod');
+    return { revision, hash: read.hash, etag: read.etag, pinnedAt: now() };
+  }
+  const applyPin = (a, pinned) => {
+    a.revisions.push(pinned);
+    a.current = { revision: pinned.revision, hash: pinned.hash, etag: pinned.etag };
     for (const m of Object.values(d().machines).filter((m) => m.assetId === a.id)) {
-      m.staleRevision = m.pinned.revision !== revision;
+      m.staleRevision = m.pinned.revision !== pinned.revision;
     }
+  };
+  // Before a binding and before publish: the pod must still hold the pinned
+  // bytes under the pinned ETag.
+  async function unchangedSincePin(a) {
+    const read = await readPod(a.podUrl);
+    need(read.etag === a.current.etag && read.hash === a.current.hash, 409, 'pod changed since pin');
   }
 
   // Binding must reference current revision, machine generation and an allowed transition.
@@ -134,26 +163,29 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
   const routes = [];
   const route = (method, path, fn) => routes.push([method, new RegExp(`^${path.replace(/:(\w+)/g, '(?<$1>[^/]+)')}$`), fn]);
 
-  route('POST', '/assets', ({ body, principal }) => {
+  route('POST', '/assets', async ({ body, principal }) => {
     allow(principal, 'registrar');
     need(validPodUrl(body.podUrl, podOrigin), 400, 'podUrl invalid or outside configured CSS origin');
     need(body.caseId, 400, 'caseId required');
     const a = { id: id('asset'), podUrl: body.podUrl, caseId: body.caseId, authority: body.authority || null,
       dependencies: Array.isArray(body.dependencies) ? body.dependencies : [], revisions: [], current: null, createdAt: now() };
-    pin(a, body);
+    const pinned = await pin(a, body);
+    applyPin(a, pinned);
     d().assets[a.id] = a;
-    store.save();
+    commit({ type: 'asset.registered', assetId: a.id, podUrl: a.podUrl, caseId: a.caseId, by: actor(principal), pinned });
     return [201, a];
   });
   route('GET', '/assets', () => [200, Object.values(d().assets)]);
   route('GET', '/assets/:id', ({ params }) => [200, asset(params.id)]);
-  route('POST', '/assets/:id/revisions', ({ params, body, principal }) => {
+  route('POST', '/assets/:id/revisions', async ({ params, body, principal }) => {
     allow(principal, 'registrar');
     const a = asset(params.id);
-    pin(a, body);
-    store.save();
+    const pinned = await pin(a, body);
+    applyPin(a, pinned);
+    commit({ type: 'revision.pinned', assetId: a.id, by: actor(principal), pinned });
     return [201, a];
   });
+  route('GET', '/assets/:id/history', ({ params }) => { asset(params.id); return [200, log.read((e) => e.assetId === params.id)]; });
   route('POST', '/assets/:id/machines', ({ params, body, principal }) => {
     allow(principal, 'registrar');
     const a = asset(params.id);
@@ -162,7 +194,7 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
     const m = { id: id('machine'), assetId: a.id, guardrailClass: body.guardrailClass || 'review', rules: cls, generation: 1,
       state: cls.initial, status: 'provisioning', revoked: false, staleRevision: false, pinned: { ...a.current }, createdAt: now() };
     d().machines[m.id] = m;
-    store.save();
+    commit({ type: 'machine.instantiated', assetId: a.id, machineId: m.id, by: actor(principal) });
     return [201, m];
   });
   // Bundle (triggers, PE sources, context policy, manifest) verified before observations are admitted.
@@ -173,20 +205,20 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
     need(body.manifestHash && body.manifestHash === sha256(JSON.stringify(body.manifest || {})), 400, 'manifest hash mismatch');
     m.status = 'active';
     m.manifestHash = body.manifestHash;
-    store.save();
+    commit({ type: 'machine.verified', assetId: m.assetId, machineId: m.id, manifestHash: m.manifestHash, by: actor(principal) });
     return [200, m];
   });
   route('POST', '/machines/:id/revoke', ({ params, principal }) => {
     allow(principal, 'registrar');
     const m = machine(params.id);
     m.revoked = true; m.status = 'revoked'; m.generation += 1;
-    store.save();
+    commit({ type: 'machine.revoked', assetId: m.assetId, machineId: m.id, generation: m.generation, by: actor(principal) });
     return [200, m];
   });
   route('GET', '/machines/:id', ({ params }) => [200, machine(params.id)]);
 
   // Step-binding receipt: ties the ISRE snapshot to the resulting OSRE recognition and exact asset revision.
-  route('POST', '/machines/:id/bindings', ({ params, body, principal }) => {
+  route('POST', '/machines/:id/bindings', async ({ params, body, principal }) => {
     allow(principal, 'engine');
     const m = machine(params.id);
     const a = asset(m.assetId);
@@ -195,27 +227,31 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
     need(body.generation === m.generation, 409, 'stale execution generation');
     need(m.status === 'active' && !m.revoked, 409, 'machine not active');
     need((m.rules.actions[m.state] || []).concat(m.state).includes(body.action) || body.action === m.state, 409, 'action not permitted');
+    await unchangedSincePin(a);
     const b = { id: id('bind'), machineId: m.id, podUrl: a.podUrl, revision: a.current.revision, hash: a.current.hash,
       generation: m.generation, action: body.action, isreSnapshot: body.isreSnapshot, osreOutput: body.osreOutput,
       contextGrant: { scopes: m.rules.scopes[body.action] || [], podUrl: a.podUrl },
       predecessors: Array.isArray(body.predecessors) ? body.predecessors : [], status: 'dispatched', createdAt: now() };
-    b.receipt = receipt('step-binding', { bindingId: b.id, machineId: m.id, revision: b.revision, isre: sha256(JSON.stringify(b.isreSnapshot)), osre: sha256(JSON.stringify(b.osreOutput)) }).id;
+    b.receipt = receipt('step-binding', { bindingId: b.id, machineId: m.id, podUrl: a.podUrl, revision: b.revision, hash: b.hash, etag: a.current.etag, isre: sha256(JSON.stringify(b.isreSnapshot)), osre: sha256(JSON.stringify(b.osreOutput)) }).id;
     d().bindings[b.id] = b;
-    store.save();
+    commit({ type: 'binding.created', assetId: a.id, machineId: m.id, bindingId: b.id, action: b.action, receiptId: b.receipt, by: actor(principal) });
     // The agent's capability for this binding (D8). It is returned once, to the
     // engine that dispatches the agent, and never stored or served again.
     return [201, { ...b, capability: capabilities.issue({ bindingId: b.id, scopes: b.contextGrant.scopes }) }];
   });
   route('GET', '/bindings/:id', ({ params }) => [200, binding(params.id)]);
 
-  route('POST', '/bindings/:id/proposals', ({ params, body, principal }) => {
+  route('POST', '/bindings/:id/proposals', async ({ params, body, principal }) => {
     allow(principal, 'agent');
     need(principal.capability.bnd === params.id, 403, 'capability is for another binding');
     const b = binding(params.id);
     const m = machine(b.machineId);
-    checkBinding(b, m, asset(m.assetId));
+    const a = asset(m.assetId);
+    checkBinding(b, m, a);
     need(b.status === 'dispatched', 409, 'binding already completed');
     need(body.result !== undefined, 400, 'result required');
+    // Publish is the one step that writes the pod: it must find the pinned bytes.
+    if (b.action === 'publish') await unchangedSincePin(a);
     const p = Object.freeze({ id: id('prop'), bindingId: b.id, result: body.result, resultHash: sha256(JSON.stringify(body.result)), createdAt: now() });
     d().proposals[p.id] = p;
     b.status = 'completed';
@@ -225,7 +261,7 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
       m.state = body.next;
     } else if (next.length === 1) m.state = next[0];
     const r = receipt('proposal-commit', { proposalId: p.id, bindingId: b.id, resultHash: p.resultHash, machineState: m.state });
-    store.save();
+    commit({ type: 'proposal.committed', assetId: a.id, machineId: m.id, bindingId: b.id, proposalId: p.id, machineState: m.state, receiptId: r.id, by: actor(principal) });
     return [201, { proposal: p, receipt: r }];
   });
 
@@ -237,7 +273,7 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
     need(typeof body.body === 'string' && body.body, 400, 'body required');
     const f = { id: id('finding'), assetId: a.id, revision: a.current.revision, author: self(principal, body.author, 'author'), motivation: body.motivation || 'commenting', body: body.body, target: body.target || null, createdAt: now() };
     d().findings[f.id] = f;
-    store.save();
+    commit({ type: 'finding.recorded', assetId: a.id, findingId: f.id, revision: f.revision, by: actor(principal) });
     return [201, f];
   });
   route('GET', '/assets/:id/annotations', ({ params }) => [200, Object.values(d().findings).filter((f) => f.assetId === params.id)]);
@@ -251,14 +287,14 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
     need(!prior, 409, 'reviewer already dispositioned this revision');
     const x = { id: id('disp'), assetId: a.id, revision: a.current.revision, reviewer, decision: body.decision, findingIds: body.findingIds || [], createdAt: now() };
     d().dispositions[x.id] = x;
-    store.save();
+    commit({ type: 'disposition.recorded', assetId: a.id, dispositionId: x.id, revision: x.revision, decision: x.decision, by: actor(principal) });
     return [201, x];
   });
   route('GET', '/roles', ({ principal }) => { allow(principal, 'admin'); return [200, roles.all()]; });
   route('PUT', '/roles', ({ body, principal }) => {
     allow(principal, 'admin');
     roles.set(body.webId, body.roles);
-    store.save();
+    commit({ type: 'roles.set', webId: body.webId, roles: roles.of(body.webId), by: actor(principal) });
     return [200, { webId: body.webId, roles: roles.of(body.webId) }];
   });
   // Whoever is calling, as this service sees them.
@@ -270,12 +306,15 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
     need(r, 404, 'receipt not found');
     return [200, r];
   });
+  // The same check anyone can make offline with GET /keys.
   route('POST', '/receipts/:id/verify', ({ params }) => {
     const r = d().receipts[params.id];
     need(r, 404, 'receipt not found');
-    const { signature, ...rest } = r;
-    return [200, { valid: signature === sign(rest) }];
+    return [200, { valid: verifyReceipt(r, receipts.jwks) }];
   });
+
+  let queue = Promise.resolve();
+  const serial = (fn) => { const next = queue.then(fn, fn); queue = next.catch(() => {}); return next; };
 
   const handler = (req, res) => {
     const send = (s, o) => { const b = JSON.stringify(o); res.writeHead(s, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(b) }); res.end(b); };
@@ -286,6 +325,8 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
       try {
         const path = new URL(req.url, 'http://x').pathname;
         if (req.method === 'GET' && path === '/health') return send(200, { status: 'ok', identity: identityStatus() });
+        // The receipt keys (Ed25519, JWKS): what an offline verifier needs.
+        if (req.method === 'GET' && path === '/keys') return send(200, receipts.jwks);
         if (req.method === 'GET' && path === '/registry') {
           const [status, value] = readRegistry();
           return send(status, value);
@@ -297,13 +338,16 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', secret 
         for (const [m, re, fn] of routes) {
           const match = re.exec(path);
           if (m === req.method && match) {
-            const [s, o] = fn({ params: match.groups || {}, body, principal });
+            // Changes run one at a time: a pod read sits between a change's
+            // checks and its commit, and two interleaved there could both pass.
+            const run = () => fn({ params: match.groups || {}, body, principal });
+            const [s, o] = req.method === 'GET' ? await run() : await serial(run);
             return send(s, o);
           }
         }
         throw new HttpError(404, 'not found');
       } catch (e) {
-        if (e instanceof HttpError || e instanceof AuthError) return send(e.status, { error: e.message });
+        if (e instanceof HttpError || e instanceof AuthError || e instanceof IntegrityError) return send(e.status, { error: e.message });
         console.error(e);
         send(500, { error: 'internal error' });
       }

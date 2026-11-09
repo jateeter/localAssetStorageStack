@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { createApp, Store } from './app.js';
 import { MIN_SERVICE_TOKEN, capabilityIssuer, serviceIdentity, solidOidcVerifier } from './identity.js';
+import { IntegrityError, eventLog, podClient, receiptSigner } from './integrity.js';
 
 const fail = (message) => { console.error(message); process.exit(1); };
 
@@ -18,6 +19,7 @@ if (!Object.values(tokens).some(Boolean) || Object.values(tokens).some((t) => t 
 for (const retired of ['AGENT_TOKEN', 'REVIEWER_TOKEN']) {
   if (process.env[retired]) console.warn(`${retired} is ignored: reviewers sign in with Solid-OIDC and agents carry capability tokens`);
 }
+if (process.env.RECEIPT_SECRET) console.warn('RECEIPT_SECRET is ignored: receipts are Ed25519, with the public key at /keys');
 // Every link is TLS 1.3 (RealityEngine_CI#668). The service never serves
 // plaintext: without its certificate it refuses to start.
 const keyFile = process.env.TLS_KEY_FILE;
@@ -44,12 +46,21 @@ const server = createApp({
   store: new Store(process.env.DATA_FILE || `${dataDir}/state.json`),
   podOrigin: cssOrigin,
   registryFile: process.env.REGISTRY_FILE || '',
-  secret: process.env.RECEIPT_SECRET || undefined,
   tls: { key: fs.readFileSync(keyFile), cert: fs.readFileSync(certFile) },
   verifyPerson: solidOidcVerifier({ issuers: [`${cssOrigin}/`] }),
   rolesFile: process.env.ROLES_FILE || '',
   capabilities: capabilityIssuer({ keyFile: `${dataDir}/capability-key.pem` }),
-  identityStatus: () => identityState
+  identityStatus: () => identityState,
+  // Pod reads and writes go through the service's own DPoP identity; until it
+  // is provisioned, they answer 503 rather than fail opaquely.
+  pod: podClient({
+    fetchImpl: (url, init) => {
+      if (identityState.status !== 'ready') throw new IntegrityError(503, 'the service identity is not ready');
+      return identity.fetch(url, init);
+    }
+  }),
+  receipts: receiptSigner({ keyFile: `${dataDir}/receipt-key.pem` }),
+  log: eventLog({ file: `${dataDir}/events.jsonl` })
 });
 server.listen(Number(process.env.PORT || 8443), '0.0.0.0');
 
