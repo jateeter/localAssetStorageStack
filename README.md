@@ -133,9 +133,12 @@ Routes:
 - `POST /frames/:id/clones` (engine) – allocate the frame's lanes in the clone's reserved cells; `DELETE /frames/:id/clones/:cloneId?generation=` – free them; `GET /lanes`
 - `GET /assets/:id/history` – the asset's events from the append-only log
 - `GET /keys` (open) – the receipt keys (JWKS)
+- `GET /metrics` (open) – the workflow in aggregate, for Prometheus (ROADMAP phase 10). It carries frames, continuations and heads by status, parked continuations and the oldest one's age by resumer role and next template, reviews pending, and events committed by type. No frame, asset or person is a label.
 - `GET /receipts/:id`, `POST /receipts/:id/verify` – the same check `scripts/verify-receipt.js` makes offline
 
-Runtime integration with ISRE/OSRE, PE, and OpenClaw is pending; this repo provides the contracts and service.
+Every event the service commits is also written to stdout as one JSON line (`"kind": "lifecycle.event"`, the line as the log holds it), unless `LIFECYCLE_EVENT_LINES=off`. RealityEngine_CI's Promtail picks up this stack's containers by their `org.realityengine.stack=localassetstoragestack` label and sends the lines to Loki, where its `asset-workflow` Grafana dashboard follows each asset through the workflow (ROADMAP phase 10).
+
+OpenClaw agents (ROADMAP phase 8) and dokieli notifications (phase 5) are pending.
 
 Known gaps and the plan to close them: [ROADMAP.md](ROADMAP.md), from the review in `docs/localAssetStorageStack Gaps.pdf`.
 

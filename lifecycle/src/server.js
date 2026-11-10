@@ -62,6 +62,10 @@ const server = createApp({
   }),
   receipts: receiptSigner({ keyFile: `${dataDir}/receipt-key.pem` }),
   log: eventLog({ file: `${dataDir}/events.jsonl` }),
+  // Each event line on stdout too, for Loki (ROADMAP phase 10): RealityEngine_CI's
+  // Promtail reads this container's log. LIFECYCLE_EVENT_LINES=off keeps them out.
+  eventOut: process.env.LIFECYCLE_EVENT_LINES === 'off' ? null
+    : (line) => process.stdout.write(`${JSON.stringify({ kind: 'lifecycle.event', ...line })}\n`),
   // The engines, through the RealityEngine instance registry when one is
   // configured (ROADMAP phase 11 supplies it): continuation rule 7 and frame
   // lanes (phase 6). Unconfigured, rule 7 answers 'unchecked' and lanes are
