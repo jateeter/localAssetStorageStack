@@ -3,6 +3,7 @@ import { createApp, Store } from './app.js';
 import { MIN_SERVICE_TOKEN, capabilityIssuer, serviceIdentity, solidOidcVerifier } from './identity.js';
 import { IntegrityError, eventLog, podClient, receiptSigner } from './integrity.js';
 import { engineLink } from './engines.js';
+import { inboxClient } from './inbox.js';
 
 const fail = (message) => { console.error(message); process.exit(1); };
 
@@ -54,6 +55,14 @@ const server = createApp({
   identityStatus: () => identityState,
   // Pod reads and writes go through the service's own DPoP identity; until it
   // is provisioned, they answer 503 rather than fail opaquely.
+  // Each asset's inbox and its notification channel, as the service (ROADMAP
+  // phase 5); like pod reads, it waits for the service identity.
+  inbox: inboxClient({
+    fetchImpl: (url, init) => {
+      if (identityState.status !== 'ready') throw new IntegrityError(503, 'the service identity is not ready');
+      return identity.fetch(url, init);
+    }
+  }),
   pod: podClient({
     fetchImpl: (url, init) => {
       if (identityState.status !== 'ready') throw new IntegrityError(503, 'the service identity is not ready');
@@ -84,6 +93,7 @@ for (let attempt = 1; ; attempt += 1) {
     await identity.provision();
     identityState = { status: 'ready', webId: identity.webId };
     console.log(`lifecycle: service identity ${identity.webId}`);
+    server.inboxes?.start();
     break;
   } catch (e) {
     identityState = { status: 'error', error: e.message };

@@ -8,7 +8,15 @@
 // - the lifecycle service's WebID: Read, Write;
 // both on the container and, by default, on everything in it. Documents under a
 // workflow are kept there; the rest of the pod stays private to its owner.
-// Idempotent: the same ACL is written every run.
+//
+// And `<pod>/assets/inbox/`, where each asset's inbox is made (ROADMAP phase 5,
+// lifecycle/src/inbox.js), with its own ACL:
+// - the owner: Read, Write, Control;
+// - the lifecycle service: Read, Write (it makes each asset's inbox and reads
+//   what arrives);
+// - every other seeded person: Append only, on every inbox, so dokieli can post
+//   a reviewer's annotation notification and nobody reads another's.
+// Idempotent: the same ACLs are written every run.
 //
 // Run by up.js once the stack is healthy, with the install CA trusted
 // (NODE_EXTRA_CA_CERTS) and IPv4 first (*.localhost resolves to ::1, and the
@@ -39,6 +47,41 @@ const assetsAcl = (owner, service) => `@prefix acl: <http://www.w3.org/ns/auth/a
   acl:mode acl:Read, acl:Write.
 `;
 
+const inboxAcl = (owner, service, others) => `@prefix acl: <http://www.w3.org/ns/auth/acl#>.
+
+<#owner> a acl:Authorization;
+  acl:agent <${owner}>;
+  acl:accessTo <./>;
+  acl:default <./>;
+  acl:mode acl:Read, acl:Write, acl:Control.
+
+<#lifecycle> a acl:Authorization;
+  acl:agent <${service}>;
+  acl:accessTo <./>;
+  acl:default <./>;
+  acl:mode acl:Read, acl:Write.
+${others.length ? `
+<#notify> a acl:Authorization;
+  ${others.map((w) => `acl:agent <${w}>;`).join('\n  ')}
+  acl:accessTo <./>;
+  acl:default <./>;
+  acl:mode acl:Append.
+` : ''}`;
+
+// Makes the container if it is missing and writes its ACL.
+async function grant(me, container, body) {
+  let head = await me.fetch(container, { method: 'HEAD' });
+  if (head.status === 404) {
+    const made = await me.fetch(container, { method: 'PUT', headers: { 'content-type': 'text/turtle' }, body: '' });
+    if (!made.ok) throw new Error(`creating ${container}: ${made.status}`);
+    head = await me.fetch(container, { method: 'HEAD' });
+  }
+  if (!head.ok) throw new Error(`${container}: ${head.status}`);
+  const acl = aclOf(head, container);
+  const put = await me.fetch(acl, { method: 'PUT', headers: { 'content-type': 'text/turtle' }, body });
+  if (!put.ok) throw new Error(`writing ${acl}: ${put.status}`);
+}
+
 const aclOf = (response, url) => {
   const link = response.headers.get('link') || '';
   const m = link.match(/<([^>]+)>\s*;\s*rel="acl"/);
@@ -51,15 +94,9 @@ for (const [pod, account] of Object.entries(accounts)) {
   const me = serviceIdentity({ cssBase: CSS_BASE, account, credentialsFile: path.join(secretsDir, `${pod}-client.json`) });
   await me.provision();
   const container = new URL(`${pod}/assets/`, CSS_BASE).href;
-  let head = await me.fetch(container, { method: 'HEAD' });
-  if (head.status === 404) {
-    const made = await me.fetch(container, { method: 'PUT', headers: { 'content-type': 'text/turtle' }, body: '' });
-    if (!made.ok) throw new Error(`creating ${container}: ${made.status}`);
-    head = await me.fetch(container, { method: 'HEAD' });
-  }
-  if (!head.ok) throw new Error(`${container}: ${head.status}`);
-  const acl = aclOf(head, container);
-  const put = await me.fetch(acl, { method: 'PUT', headers: { 'content-type': 'text/turtle' }, body: assetsAcl(webIdOf(pod), lifecycle) });
-  if (!put.ok) throw new Error(`writing ${acl}: ${put.status}`);
+  await grant(me, container, assetsAcl(webIdOf(pod), lifecycle));
   console.log(`grant-assets: ${container} — ${webIdOf(pod)} (owner), ${lifecycle} (read, write)`);
+  const others = Object.keys(accounts).filter((p) => p !== SERVICE && p !== pod).map((p) => webIdOf(p));
+  await grant(me, `${container}inbox/`, inboxAcl(webIdOf(pod), lifecycle, others));
+  console.log(`grant-assets: ${container}inbox/ — ${webIdOf(pod)} (owner), ${lifecycle} (read, write), ${others.length} others (append)`);
 }

@@ -88,6 +88,23 @@ All services join the external-by-name Docker network `reality-engine`, so local
 docker network create reality-engine
 ```
 
+## dokieli → the lifecycle: asset inboxes
+
+ROADMAP phase 5 (`lifecycle/src/inbox.js`).
+- **The inbox.** Each registered asset gets an inbox container, `<pod>/assets/inbox/<assetId>/`. The document advertises it as `Link: <inbox>; rel="http://www.w3.org/ns/ldp#inbox"`, through its description resource (`.meta`), which is where dokieli looks for the inbox to send an annotation's notification to.
+  - CSS drops the link when the document is replaced, and writing it changes the document's ETag.
+  - So the service writes it just before every pin: at registration, at each new revision, and after a frame's own `/pod` write. The pin then holds the ETag the link left.
+- **Access** (`scripts/grant-assets.js`, on `<pod>/assets/inbox/`):
+  - the owner has Read, Write and Control;
+  - the lifecycle has Read and Write;
+  - every other seeded person has **Append** only, so they can post notifications and can't read anyone's.
+- **Watching.** The service subscribes to each inbox through CSS's Solid Notifications (WebSocketChannel2023). It sweeps each inbox when it subscribes, which covers anything posted while it was down. `POST /assets/:id/inbox/sweep` sweeps one on demand.
+- **Findings.** Each new item, an ActivityStreams `Announce`/`Create` as dokieli's `notifyInbox` sends it, becomes one finding on the asset. The finding is logged on every open frame that holds the asset, and recorded once.
+  - The service fetches the annotation the item names, where it can read it, for its body, motivation and target.
+  - **An inbox item has no authenticated sender.** CSS checks that the poster may append, not who they are, and dokieli's `actor` is the sender's own claim. So a finding's `author` is claimed, with `attribution: "claimed"`.
+  - It is `"corroborated"` when the annotation lives in that author's own pod and names the same creator.
+  - **Neither is ever an approval.** A reviewer's decision is a resume through the API with their Solid-OIDC token.
+
 ## Run
 ```
 cp .env.example .env   # fill in the service tokens (>= 32 bytes); optionally ASSETS_PEOPLE
@@ -132,6 +149,7 @@ Routes:
 - `GET|PUT /pod?url=` – an agent's only way to its frame's documents
 - `POST /frames/:id/clones` (engine) – allocate the frame's lanes in the clone's reserved cells; `DELETE /frames/:id/clones/:cloneId?generation=` – free them; `GET /lanes`
 - `GET /assets/:id/history` – the asset's events from the append-only log
+- `POST /assets/:id/inbox/sweep` (registrar, engine) – record what the asset's inbox holds now (phase 5; the notification channel does this on its own)
 - `GET /keys` (open) – the receipt keys (JWKS)
 - `GET /metrics` (open) – the workflow in aggregate, for Prometheus (ROADMAP phase 10). It carries frames, continuations and heads by status, parked continuations and the oldest one's age by resumer role and next template, reviews pending, and events committed by type. No frame, asset or person is a label.
 - `GET /receipts/:id`, `POST /receipts/:id/verify` – the same check `scripts/verify-receipt.js` makes offline

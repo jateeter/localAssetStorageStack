@@ -9,6 +9,8 @@
 //   IFRS_Sec03_Compliance_Assertion_Arbiter for review, holding no block;
 // - approver ≠ preparer: a frame the reviewer prepared cannot be approved by
 //   the same reviewer;
+// - an annotation announced to the document's inbox, as dokieli sends it, is a
+//   finding on the parked frame and resumes nothing (phase 5);
 // - the reviewer approves; a replayed approval is refused;
 // - the arbiter step runs and termination closes the frame and its head;
 // - a stale upstream takes the escape path;
@@ -49,12 +51,14 @@ async function newAsset(name) {
   await author.pod(doc, { method: 'PUT', headers: { 'content-type': 'text/html' }, body: `<p>${name}</p>` });
   return { doc, asset: (await lc('POST', '/assets', 'registrar', { podUrl: doc, caseId: `chain-${run}`, revision: 'r1' })).body };
 }
+const assetOf = {};
 async function build(e, { preparer, upstreamRefs = [], entity }) {
-  const { asset } = await newAsset(`ifrs-${e.id}-${entity}`);
+  const { doc, asset } = await newAsset(`ifrs-${e.id}-${entity}`);
   const r = await lc('POST', '/frames', 'registrar', { documents: [{ assetId: asset.id }], preparer: preparer.webId, upstreamRefs,
     case: { delimiter: 'ifrs-approval-case', entity: `${entity}-${e.id}-${run}`, period: '2026-Q4', assetType: 'COMPLIANCE-REVIEW' },
     action: 'prepare', first: { next: { engineId: e.id, templateId: T1 } } });
   if (r.status !== 201) throw new Error(`${e.id}: frame refused ${r.status} ${JSON.stringify(r.body)}`);
+  assetOf[r.body.frameId] = { doc, asset };
   return r.body.frameId;
 }
 const parkedK = (k) => async (fid) => { const f = await frame(fid); const c = last(f); return c.status === 'parked' && c.continuationId === k ? f : null; };
@@ -69,6 +73,16 @@ for (const e of engines) {
   const parked = await until(`${e.id}: prepare parks`, () => parkedK('k1')(a));
   o.parked = { next: last(parked).next.templateId, head: parked.headStatus, role: last(parked).resumableBy.role };
   o.blocksWhileParked = (await clonesOf(e, a)).length;
+  // An annotation on the document under review, announced to its inbox as
+  // dokieli's notifyInbox sends it: a finding on the frame, never a resume.
+  const { doc: aDoc, asset: aAsset } = assetOf[a];
+  const sent = await reviewer.pod(aAsset.inbox, { method: 'POST', headers: { 'content-type': 'application/ld+json' },
+    body: JSON.stringify({ '@context': 'https://www.w3.org/ns/activitystreams', type: 'Announce', actor: reviewer.webId,
+      object: `${reviewer.webId.replace('profile/card#me', '')}annotations/${run}-${e.id}`, inReplyTo: aDoc, summary: 'approve' }) });
+  const noted = await until(`${e.id}: the inbox annotation is a finding on the frame`, async () =>
+    ((await lc('GET', `/frames/${a}/history`, 'engine')).body.some((x) => x.type === 'finding.recorded') ? true : null), 30);
+  const still = last(await frame(a));
+  o.inbox = { posted: sent.status, finding: noted, stillParked: still.status === 'parked' && still.continuationId === 'k1' };
   // Approver ≠ preparer.
   const b = await build(e, { preparer: reviewer, entity: 'B' });
   await until(`${e.id}: B parks`, () => parkedK('k1')(b));
@@ -112,6 +126,7 @@ for (const e of engines) {
   o.pool.asBefore = afterPool.length === before.length;
   outcomes[e.id] = o;
   t.check(`${e.id}: prepare parked ${T2} for a reviewer, holding no block`, o.parked.next === T2 && o.parked.role === 'reviewer' && o.parked.head === 'IN_REVIEW' && o.blocksWhileParked === 0);
+  t.check(`${e.id}: an inbox annotation is a finding on the parked frame and approves nothing`, o.inbox.posted === 201 && o.inbox.finding && o.inbox.stillParked, JSON.stringify(o.inbox));
   t.check(`${e.id}: the preparer cannot approve`, o.approveByPreparer.status === 403 && o.approveByPreparer.error === 'the approver must not be the preparer', JSON.stringify(o.approveByPreparer));
   t.check(`${e.id}: the reviewer approves; the replay is refused`, o.approve.outcome === 'resume' && o.replay.status === 409);
   t.check(`${e.id}: the arbiter step ran and terminated; the head is closed`, o.closed.head === 'CLOSED' && o.closed.lastReturnTemplate === T2 && o.blocksAfterClose === 0);
