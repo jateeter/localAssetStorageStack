@@ -540,20 +540,37 @@ A5). The core of the integration.
   - an API approval resumes k2 and yields k3.
 
 **6. The lifecycle service as a PE Source.** Turns on lifecycle → engines.
-- **A source mapping** for the IFRS domain's
-  `reviewed-accounting-event-source-mapping`. These observations write the
-  template machines' ordinary input lanes, so the templates fire and emit
-  dispatch envelopes:
-  - an asset entering its workflow;
-  - a revision pinned;
-  - a disposition;
-  - a continuation resumed or gone stale.
-- **The termination path:** a completion is written into the clone's own input
-  quarter (`/api/integrations/completions`); for IFRS it is the head close (D11).
-- **The voting PEs** write clone input quarters and compose nothing else from
-  the clone band. The TypeScript PE follows (RealityEngine_Manager#324).
-- **Verify:** one lifecycle event produces the same envelope on all three voting
-  engines.
+- **Status (2026-11-09): done** (localAssetStorageStack#20).
+- **The design** (owner, 2026-11-09): the template is the existing domain
+  machine, with no new template machine.
+  - The lifecycle maps the template's reserved input cells (2–7) of the clone
+    running a frame's step into the frame's lanes.
+  - It allocates them when the clone is made and frees them when it is
+    recycled, so the allocation lasts as long as the clone.
+  - The lanes are written through a sensor source on that engine's PE.
+- **The lanes,** each 1 while it holds:
+  - 2: the asset is in its workflow;
+  - 3: a frame document has been re-pinned;
+  - 4: approved;
+  - 5: rework, until the next step resumes;
+  - 6: a step is running;
+  - 7: the head is STALE.
+- **Sources:** one per engine and block, kept and zeroed on release, because a
+  PE keeps a removed source's last values.
+- **Verify, live on the three voting engines** with lane TLS, an `https`
+  instance registry and a real CSS document:
+  - rule 7 checked against each engine;
+  - lanes allocated in each clone's reserved cells (`[20482:20487]`);
+  - **one lifecycle event (a re-pin) produced the same lanes on all three**
+    (`[0,0,1,1,0,0,1,1]` in cells 0–7);
+  - lanes freed with each clone, and the cells clear on every engine.
+- **What phase 6 did not need:** the engine-side composition from the clone
+  band. The voting PEs already write a sensor source's region in the clone band
+  and compose nothing else from it.
+- **Not yet:** the IFRS template machines' sequences don't recognise the lanes,
+  so a lane change produces no dispatch envelope by itself. A completion
+  written to the clone's input quarter (`/api/integrations/completions`) is the
+  agent `writeBack` path, which comes with phase 8's agents.
 
 **7. Clone and recycle on the voting engines** (RealityEngine_CPP#191,
 RealityEngine_LSP#184, RealityEngine_Scala#209). It can run in parallel from

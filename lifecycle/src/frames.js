@@ -160,7 +160,9 @@ export function mountFrames(ctx) {
     const f = {
       frameId: id('frame'), case: { delimiter: kase.delimiter, entity: kase.entity ?? null, period: kase.period ?? null, assetType: kase.assetType ?? null },
       headKey, preparer: body.preparer, documents, upstreamRefs, action: body.action ?? null, arguments: body.arguments ?? null,
-      return: null, continuations: [], current: null, status: 'open', headStatus: null, pointer: null, createdAt: now()
+      return: null, continuations: [], current: null, status: 'open', headStatus: null, pointer: null, createdAt: now(),
+      // What the frame's lanes report (lanes.js): set as the observations happen.
+      observed: { pinned: false, approved: false, rework: false }
     };
     const first = body.first || {};
     const spec = { next: checkNext(first.next), resumableBy: checkResumer(f, first.resumableBy || { role: 'engine' }), scopes: checkScopes(first.scopes), onStale: 'k0' };
@@ -262,7 +264,7 @@ export function mountFrames(ctx) {
         reviewer: principal.webId, decision: body.decision, findingIds: Array.isArray(body.findingIds) ? body.findingIds : [], createdAt: now() };
       d().dispositions[x.id] = x;
       commit({ type: 'disposition.recorded', assetId: primary.assetId, frameId: f.frameId, dispositionId: x.id, revision: x.revision, decision: x.decision, by });
-      if (body.decision === 'rework') return [200, escape(f, c, 'rework', by, HEAD.DRAFT)];
+      if (body.decision === 'rework') { f.observed.rework = true; return [200, escape(f, c, 'rework', by, HEAD.DRAFT)]; }
     }
     // Rule 7: the named engine instance must still carry the template.
     const carried = await engineCheck(c.next.engineId, c.next.templateId);
@@ -270,7 +272,8 @@ export function mountFrames(ctx) {
     c.status = 'resumed';
     c.resumedAt = now();
     c.resumedBy = by;
-    if (role !== 'engine') { c.decision = body.decision; setHead(f, HEAD.APPROVED); }
+    f.observed.rework = false;
+    if (role !== 'engine') { c.decision = body.decision; f.observed.approved = true; setHead(f, HEAD.APPROVED); }
     const r = receipt('continuation-resumed', { frameId: f.frameId, continuationId: c.continuationId, generation: c.generation, pinned: c.pinned, next: c.next, decision: c.decision ?? null, engineCheck: carried, by });
     commit({ type: 'continuation.resumed', assetId: f.frameId, frameId: f.frameId, continuationId: c.continuationId, generation: c.generation, engineCheck: carried, by, receiptId: r.id });
     const out = { outcome: 'resume', next: c.next, continuation: c, engineCheck: carried, receipt: r.id };
@@ -292,7 +295,7 @@ export function mountFrames(ctx) {
   // ── abandon and close ────────────────────────────────────────────────────────────
   // The case's abandon capability: the preparer, or registrar automation. Never
   // an agent, never the engine side.
-  route('POST', '/frames/:id/abandon', ({ params, body, principal }) => {
+  route('POST', '/frames/:id/abandon', async ({ params, body, principal }) => {
     const f = frame(params.id);
     open(f);
     const holds = (principal.kind === 'person' && principal.webId === f.preparer) || (principal.kind === 'service' && principal.roles.includes('registrar'));
@@ -303,13 +306,14 @@ export function mountFrames(ctx) {
     f.status = 'abandoned';
     setHead(f, HEAD.ABANDONED);
     const by = actor(principal);
+    await ctx.lanes.releaseFrame(f.frameId, by, 'abandoned');
     const r = receipt('frame-abandoned', { frameId: f.frameId, continuationId: c.continuationId, generation: c.generation, reason: body.reason, by });
     commit({ type: 'frame.abandoned', assetId: f.frameId, frameId: f.frameId, continuationId: c.continuationId, generation: c.generation, reason: body.reason, by, receiptId: r.id });
     return [200, { frame: f, receipt: r.id }];
   });
   // Termination (D11): the step that ran was the last; the frame and its
   // workflow head close together.
-  route('POST', '/frames/:id/close', ({ params, principal }) => {
+  route('POST', '/frames/:id/close', async ({ params, principal }) => {
     allow(principal, 'engine');
     const f = frame(params.id);
     open(f);
@@ -320,6 +324,8 @@ export function mountFrames(ctx) {
     f.closedAt = now();
     setHead(f, HEAD.CLOSED);
     const by = actor(principal);
+    // Termination (D11): the frame's lanes go with it.
+    await ctx.lanes.releaseFrame(f.frameId, by, 'closed');
     const r = receipt('frame-closed', { frameId: f.frameId, headKey: f.headKey, continuationId: c.continuationId, generation: c.generation, return: f.return === null ? null : ctx.sha256(JSON.stringify(f.return)), by });
     commit({ type: 'frame.closed', assetId: f.frameId, frameId: f.frameId, headKey: f.headKey, by, receiptId: r.id });
     return [200, { frame: f, receipt: r.id }];
@@ -343,6 +349,7 @@ export function mountFrames(ctx) {
     const pinned = { revision: `${doc.revision}+${f.current}`, hash: read.hash, etag: read.etag, pinnedAt: now() };
     applyPin(a, pinned, { except: f.frameId });
     Object.assign(doc, { revision: pinned.revision, sha256: pinned.hash, etag: pinned.etag });
+    f.observed.pinned = true;
     const r = receipt('pod-written', { frameId: f.frameId, continuationId: f.current, uri: doc.uri, revision: pinned.revision, sha256: pinned.hash, etag: written.etag ?? read.etag, by: actor(principal) });
     commit({ type: 'pod.written', assetId: doc.assetId, frameId: f.frameId, uri: doc.uri, revision: pinned.revision, by: actor(principal), receiptId: r.id });
     return [200, { uri: doc.uri, revision: pinned.revision, sha256: pinned.hash, etag: pinned.etag, receipt: r.id }];
@@ -370,12 +377,18 @@ export function mountFrames(ctx) {
       const doc = f.documents.find((x) => x.assetId === assetId);
       const up = f.upstreamRefs.find((x) => x.assetId === assetId);
       if (!doc && !up) continue;
-      if (doc) Object.assign(doc, { revision: a.current.revision, sha256: a.current.hash, etag: a.current.etag });
+      if (doc) { Object.assign(doc, { revision: a.current.revision, sha256: a.current.hash, etag: a.current.etag }); f.observed.pinned = true; }
       if (up) up.revision = a.current.revision;
       const reason = doc ? `document ${assetId} re-pinned at ${a.current.revision}` : `upstream ${assetId} re-pinned at ${a.current.revision}`;
       const c = currentOf(f);
       if (OPEN(c.status)) escape(f, c, reason, by);
-      else { f.staleWhileRunning = reason; setHead(f, HEAD.STALE); }
+      else {
+        // A step is running: it is superseded when it is captured. Recorded
+        // now, so the history (and the frame's lanes) show the stale head.
+        f.staleWhileRunning = reason;
+        setHead(f, HEAD.STALE);
+        commit({ type: 'frame.stale', assetId: f.frameId, frameId: f.frameId, continuationId: c.continuationId, reason, by });
+      }
     }
   };
 }

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { createApp, Store } from './app.js';
 import { MIN_SERVICE_TOKEN, capabilityIssuer, serviceIdentity, solidOidcVerifier } from './identity.js';
 import { IntegrityError, eventLog, podClient, receiptSigner } from './integrity.js';
-import { registryEngineCheck } from './engines.js';
+import { engineLink } from './engines.js';
 
 const fail = (message) => { console.error(message); process.exit(1); };
 
@@ -62,9 +62,11 @@ const server = createApp({
   }),
   receipts: receiptSigner({ keyFile: `${dataDir}/receipt-key.pem` }),
   log: eventLog({ file: `${dataDir}/events.jsonl` }),
-  // Continuation rule 7, against the RealityEngine instance registry when one
-  // is configured (ROADMAP phase 11 supplies it); 'unchecked' otherwise.
-  engineCheck: registryEngineCheck({
+  // The engines, through the RealityEngine instance registry when one is
+  // configured (ROADMAP phase 11 supplies it): continuation rule 7 and frame
+  // lanes (phase 6). Unconfigured, rule 7 answers 'unchecked' and lanes are
+  // recorded 'unwired'.
+  link: engineLink({
     registryUrl: process.env.RE_REGISTRY_URL || '',
     keyFile, certFile, caFile: process.env.NODE_EXTRA_CA_CERTS || ''
   })

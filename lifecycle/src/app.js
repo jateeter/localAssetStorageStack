@@ -3,6 +3,7 @@ import https from 'node:https';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { Raw, mountFrames } from './frames.js';
+import { mountLanes } from './lanes.js';
 import { IntegrityError, eventLog, receiptSigner, verifyReceipt } from './integrity.js';
 import { AuthError, capabilityIssuer, isCapability, roleList, serviceTokens, solidOidcVerifier } from './identity.js';
 
@@ -68,7 +69,12 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
   pod = null, receipts = receiptSigner(), log = eventLog(),
   // Whether an engine instance carries a template, for a continuation's rule 7:
   // 'carries', 'missing' or 'unchecked' (no instance registry configured).
-  engineCheck = async () => 'unchecked' }) {
+  // Defaults to the engine link's answer.
+  engineCheck = null,
+  // The link to the engines through the instance registry (engines.js):
+  // rule 7, reserved cells and the PE sources of frame lanes (phase 6).
+  link = { configured: false } }) {
+  engineCheck ||= link.configured ? (e, t) => link.carries(e, t) : async () => 'unchecked';
   const d = () => store.d;
   const receipt = (type, body) => {
     const r = receipts.sign({ id: id('rcpt'), type, issuedAt: now(), ...body });
@@ -79,7 +85,9 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
   const actor = (p) => (p.kind === 'person' ? p.webId : p.kind === 'agent' ? `${p.capability.sub}:${p.capability.bnd}` : p.roles[0]);
   // The history first (fsynced), then the state snapshot: a crash between the
   // two leaves an event the snapshot lacks, never a change with no history.
-  const commit = (event) => { log.append(event); store.save(); };
+  // Frames a change touched, so their lanes are re-pushed before it is answered.
+  let touched = null;
+  const commit = (event) => { log.append(event); store.save(); if (touched && event.frameId) touched.add(event.frameId); };
   const readPod = async (url) => {
     need(pod, 503, 'the service cannot read pods (no service identity)');
     return pod.read(url);
@@ -298,8 +306,9 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
   // The assetID frame and its continuations (ROADMAP phase 4, frames.js).
   // `onRepin` is how a new pin reaches the frames that depend on the asset.
   let onRepin = () => {};
+  const lanes = mountLanes({ route, need, allow, d, commit: (e) => commit(e), receipt, actor, now, link });
   onRepin = mountFrames({
-    route, need, allow, d, commit, receipt, asset, readPod, actor, engineCheck, now, id, sha256, log, capabilities,
+    route, need, allow, d, commit: (e) => commit(e), receipt, asset, readPod, actor, engineCheck, now, id, sha256, log, capabilities, lanes,
     pod: { create: (...a) => { need(pod, 503, 'the service cannot write pods (no service identity)'); return pod.create(...a); },
            write: (...a) => { need(pod, 503, 'the service cannot write pods (no service identity)'); return pod.write(...a); } },
     applyPin: (a, pinned, opts) => { applyPin(a, pinned); onRepin(a.id, 'frame-step', opts); }
@@ -361,7 +370,16 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
             // Changes run one at a time: a pod read sits between a change's
             // checks and its commit, and two interleaved there could both pass.
             const run = () => fn({ params: match.groups || {}, body, principal, query, raw, contentType: req.headers['content-type'] });
-            const [s, o] = req.method === 'GET' ? await run() : await serial(run);
+            const [s, o] = req.method === 'GET' ? await run() : await serial(async () => {
+              touched = new Set();
+              try {
+                const out = await run();
+                const frames = [...touched];
+                touched = null;
+                for (const fid of frames) await lanes.refresh(fid);
+                return out;
+              } finally { touched = null; }
+            });
             if (o instanceof Raw) {
               res.writeHead(s, { 'content-type': o.contentType, 'content-length': o.bytes.length, ...(o.etag ? { etag: o.etag } : {}) });
               return res.end(o.bytes);

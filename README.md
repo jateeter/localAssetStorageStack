@@ -55,6 +55,33 @@ A pointer to the frame is written beside its primary document in the pod (D10).
 
 Every action is a log event and an Ed25519 receipt.
 
+## The lifecycle as a PE Source: frame lanes
+
+The template is the existing domain machine (owner, 2026-11-09; ROADMAP phase 6). When the engine side clones it for a frame's step, the clone carries the machine's input region in its block's input quarter. The cells the machine declares **reserved** (cells 2–7) become the frame's **lanes**. The lifecycle service manages them:
+
+- **Allocation:** `POST /frames/:id/clones`, with the engine's clone `201`, after the step's continuation is resumed. It checks four things:
+  - the clone is the step's template on the step's engine, for this assetID;
+  - the cells lie in the clone band;
+  - the template declares them reserved (asked of the engine);
+  - no live allocation holds them.
+
+  It then writes the frame's observations into them through a sensor source on that engine's PE.
+- **Deallocation:** `DELETE /frames/:id/clones/:cloneId?generation=`, after recycle, and automatically on close or abandon. The allocation lives exactly as long as the clone.
+- **The lanes,** each 1 while it holds:
+
+  | cell | observation |
+  |---|---|
+  | 2 | the asset is in its workflow |
+  | 3 | a frame document has been re-pinned |
+  | 4 | approved |
+  | 5 | rework requested, until the next step resumes |
+  | 6 | a step is running |
+  | 7 | the head is STALE |
+
+  They're re-pushed after every change to the frame, before the change is answered. A PE that can't be reached is recorded on the allocation and in the log; it never fails the change.
+- **One source per engine and block** (`lifecycle-<engine>-block-<k>`), declared once and kept. A PE keeps a removed source's last values, so freeing lanes writes zeros instead of removing the source; the next clone in that block starts clean.
+- **The engines** come from the RealityEngine instance registry (`RE_REGISTRY_URL`), over lane mTLS. Without it, allocations are recorded `unwired` and nothing is sent.
+
 All services join the external-by-name Docker network `reality-engine`, so localAIStack / localOpenClawStack services can reach them at these stable container addresses. Create the network once if it does not already exist:
 
 ```
@@ -104,6 +131,7 @@ Routes:
 - `POST /frames/:id/continuations/:k/resume` – `{ generation, decision? }`: `resume` with `next` (and an agent capability for an engine resume), or `escape`
 - `POST /frames/:id/continuations/:k/supersede` (engine), `POST /frames/:id/abandon` (the case's abandon capability), `POST /frames/:id/close` (engine; termination)
 - `GET|PUT /pod?url=` – an agent's only way to its frame's documents
+- `POST /frames/:id/clones` (engine) – allocate the frame's lanes in the clone's reserved cells; `DELETE /frames/:id/clones/:cloneId?generation=` – free them; `GET /lanes`
 - `GET /assets/:id/history` – the asset's events from the append-only log
 - `GET /keys` (open) – the receipt keys (JWKS)
 - `GET /receipts/:id`, `POST /receipts/:id/verify` – the same check `scripts/verify-receipt.js` makes offline
