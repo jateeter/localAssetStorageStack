@@ -283,3 +283,24 @@ test('rule 7 against the instance registry: carries, missing, gone or unreachabl
   const down = registryEngineCheck({ registryUrl: 'https://down/re-registry.json', get });
   assert.equal(await down('cpp-1', 'machine-draft'), 'missing', 'an unreachable registry is never a pass');
 });
+
+test('the engine side lists open frames, and takes a person-resumed step’s capability once', async () => {
+  const { f } = await build();
+  const open = (await call('GET', '/frames?status=open', 'engine')).body.frames;
+  const mine = open.find((x) => x.frameId === f.frameId);
+  assert.equal(mine.current.continuationId, 'k0');
+  assert.equal(mine.current.status, 'captured');
+  assert.ok(open.every((x) => x.status === 'open'));
+  // An engine resume carries its capability; asking again is refused.
+  await resume(f, 'k0', 'engine', { generation: 1 });
+  assert.equal((await call('POST', `/frames/${f.frameId}/continuations/k0/capability`, 'engine', {})).status, 409);
+  await capture(f, { next: engineNext('machine-approve'), resumableBy: { role: 'reviewer' }, park: true });
+  assert.equal((await call('POST', `/frames/${f.frameId}/continuations/k1/capability`, 'engine', {})).status, 409, 'not yet resumed');
+  await resume(f, 'k1', bob, { generation: 2, decision: 'approve' });
+  assert.equal((await call('POST', `/frames/${f.frameId}/continuations/k1/capability`, 'registrar', {})).status, 403);
+  const cap = await call('POST', `/frames/${f.frameId}/continuations/k1/capability`, 'engine', {});
+  assert.equal(cap.status, 200);
+  assert.equal((await call('GET', `/frames/${f.frameId}`, { capability: cap.body.capability })).status, 200, 'the agent reads its frame');
+  assert.equal((await call('POST', `/frames/${f.frameId}/continuations/k1/capability`, 'engine', {})).status, 409, 'once');
+  assert.equal((await call('GET', '/frames', { capability: cap.body.capability })).status, 403, 'agents do not list frames');
+});

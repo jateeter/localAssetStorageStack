@@ -183,6 +183,17 @@ export function mountFrames(ctx) {
     return [201, f];
   });
 
+  // The engine side's work list (and its recovery after a restart): every
+  // frame, or those with ?status=open, each with its current continuation.
+  route('GET', '/frames', ({ query, principal }) => {
+    need(principal.kind !== 'agent', 403, 'forbidden');
+    const status = query.get('status');
+    const frames = Object.values(d().frames).filter((f) => !status || f.status === status)
+      .sort((x, y) => (x.createdAt < y.createdAt ? -1 : x.createdAt > y.createdAt ? 1 : 0))
+      .map((f) => ({ frameId: f.frameId, status: f.status, headKey: f.headKey, headStatus: f.headStatus, case: f.case,
+        current: currentOf(f), createdAt: f.createdAt }));
+    return [200, { frames }];
+  });
   route('GET', '/frames/:id', ({ params, principal }) => {
     agentFrame(principal, params.id, 'frame:read');
     return [200, frame(params.id)];
@@ -278,8 +289,24 @@ export function mountFrames(ctx) {
     commit({ type: 'continuation.resumed', assetId: f.frameId, frameId: f.frameId, continuationId: c.continuationId, generation: c.generation, engineCheck: carried, by, receiptId: r.id });
     const out = { outcome: 'resume', next: c.next, continuation: c, engineCheck: carried, receipt: r.id };
     // The step's agent capability, once, to the engine side that dispatches it.
-    if (role === 'engine') out.capability = capabilities.issue({ frameId: f.frameId, continuationId: c.continuationId, scopes: c.scopes });
+    if (role === 'engine') { out.capability = capabilities.issue({ frameId: f.frameId, continuationId: c.continuationId, scopes: c.scopes }); c.capabilityIssued = true; }
     return [200, out];
+  });
+
+  // The step capability of a continuation a person resumed (a reviewer's
+  // approve): the engine side dispatching that step's agent takes it here,
+  // once. An engine resume already handed it out with the resume.
+  route('POST', '/frames/:id/continuations/:kid/capability', ({ params, principal }) => {
+    allow(principal, 'engine');
+    const f = frame(params.id);
+    open(f);
+    const c = cont(f, params.kid);
+    need(f.current === c.continuationId && c.status === 'resumed', 409, `continuation is ${c.status}, not the running step`);
+    need(!c.capabilityIssued, 409, 'the step capability was already issued');
+    c.capabilityIssued = true;
+    const by = actor(principal);
+    commit({ type: 'capability.issued', assetId: f.frameId, frameId: f.frameId, continuationId: c.continuationId, by });
+    return [200, { capability: capabilities.issue({ frameId: f.frameId, continuationId: c.continuationId, scopes: c.scopes }), scopes: c.scopes }];
   });
 
   route('POST', '/frames/:id/continuations/:kid/supersede', ({ params, body, principal }) => {
