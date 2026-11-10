@@ -55,6 +55,7 @@ Secrets live in `.secrets/` (gitignored, 0600), never under `runtime/`, which th
 - `lifecycle/src/lanes.js`: the lifecycle as a PE Source (ROADMAP phase 6). A frame's lanes are the reserved cells 2–7 of the clone running its step; they're allocated when the clone is made and freed at recycle, through one sensor source per engine and block on that engine's PE.
 - `lifecycle/src/frames.js`: the assetID frame, its continuation log and the `/pod` proxy (ROADMAP phase 4; RealityEngine_CI `docs/CONTINUATIONS_APPROVAL_CHAIN.md` is authoritative). `lifecycle/src/engines.js`: the engine link through the instance registry (`RE_REGISTRY_URL`, lane mTLS): continuation rule 7, a template's reserved cells, and PE sources.
 - `scripts/grant-assets.js`: gives the lifecycle WebID Read/Write on each person's `assets/` container (run by `up.js`). `scripts/verify-receipt.js`: offline receipt verification.
+- `scripts/smoke.js`, `scripts/chain-regression.js`: checks against a running universe (ROADMAP phase 11): the local-lane smoke test, and the IFRS chain on cpp, lsp and scala compared 3-of-3. RealityEngine_CI's regression `asset-workflow` stage runs both; `scripts/lib/universe.js` is what they share (env in its header).
 - `scripts/accounts.js`: the seeded accounts, the CSS seed and the role list (tests: `scripts/accounts.test.js`).
 - `lifecycle/test/`: `node --test`.
 - `css/config.json`: CSS configuration (file storage, HTTPS server factory).
@@ -71,6 +72,7 @@ cd lifecycle && npm test     # lifecycle tests
 node --test scripts/*.test.js  # account provisioning tests
 cp .env.example .env         # service tokens (>= 32 bytes), optional ASSETS_PEOPLE
 node scripts/up.js           # start; replaces `docker compose up -d --build`
+node --dns-result-order=ipv4first scripts/smoke.js   # against a running stack (README)
 ```
 
 ## Pins
