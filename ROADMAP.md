@@ -632,6 +632,11 @@ the start.
   reviewer.
 
 **10. Asset-workflow tracking in Grafana** (D9; RealityEngine_CI#723).
+- **Status (2026-11-10):**
+  - **This repo:** `/metrics` and event lines, with the containers labelled for Promtail.
+  - **Manager:** live clones and pool use read from the engines' own bands, so a clone made outside a step counts too.
+  - **RealityEngine_CI:** the dashboard, the Prometheus job and the Promtail job.
+  - **Verified:** a local-lane run of phase 11's chain rendered every panel.
 - **The lifecycle service exports:**
   - Prometheus metrics at `/metrics`: frames open; continuations by status;
     parked age; resumes, supersessions and abandons; reviews pending;

@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { Raw, mountFrames } from './frames.js';
 import { mountLanes } from './lanes.js';
+import { workflowMetrics } from './metrics.js';
 import { IntegrityError, eventLog, receiptSigner, verifyReceipt } from './integrity.js';
 import { AuthError, capabilityIssuer, isCapability, roleList, serviceTokens, solidOidcVerifier } from './identity.js';
 
@@ -64,7 +65,10 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
   engineCheck = null,
   // The link to the engines through the instance registry (engines.js):
   // rule 7, reserved cells and the PE sources of frame lanes (phase 6).
-  link = { configured: false } }) {
+  link = { configured: false },
+  // Where each committed event line goes besides the log, for Loki (phase 10);
+  // server.js writes it to stdout.
+  eventOut = null }) {
   engineCheck ||= link.configured ? (e, t) => link.carries(e, t) : async () => 'unchecked';
   const d = () => store.d;
   const receipt = (type, body) => {
@@ -78,7 +82,14 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
   // two leaves an event the snapshot lacks, never a change with no history.
   // Frames a change touched, so their lanes are re-pushed before it is answered.
   let touched = null;
-  const commit = (event) => { log.append(event); store.save(); if (touched && event.frameId) touched.add(event.frameId); };
+  const metrics = workflowMetrics({ d, log });
+  const commit = (event) => {
+    const line = log.append(event);
+    store.save();
+    metrics.observe(line);
+    if (eventOut) eventOut(line);
+    if (touched && event.frameId) touched.add(event.frameId);
+  };
   const readPod = async (url) => {
     need(pod, 503, 'the service cannot read pods (no service identity)');
     return pod.read(url);
@@ -246,6 +257,13 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
         if (req.method === 'GET' && path === '/health') return send(200, { status: 'ok', identity: identityStatus() });
         // The receipt keys (Ed25519, JWKS): what an offline verifier needs.
         if (req.method === 'GET' && path === '/keys') return send(200, receipts.jwks);
+        // The workflow in aggregate, for Prometheus (metrics.js): it names no
+        // frame, asset or person, so it needs no sign-in, as /health does not.
+        if (req.method === 'GET' && path === '/metrics') {
+          const b = metrics.text();
+          res.writeHead(200, { 'content-type': 'text/plain; version=0.0.4', 'content-length': Buffer.byteLength(b) });
+          return res.end(b);
+        }
         if (req.method === 'GET' && path === '/registry') {
           const [status, value] = readRegistry();
           return send(status, value);

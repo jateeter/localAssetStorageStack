@@ -18,6 +18,12 @@
 # services have fixed addresses, the same inside and outside the containers
 # (ROADMAP D7): https://assets-css.localhost:13443/ and
 # https://assets-dokieli.localhost:13444/.
+# What RealityEngine_CI's Promtail selects this stack's containers by, for
+# Loki (ROADMAP phase 10): a label, not the compose project, which is the
+# checkout's directory name and differs between checkouts.
+x-labels: &labels
+  org.realityengine.stack: localassetstoragestack
+
 x-hardening: &hardening
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
@@ -26,6 +32,7 @@ x-hardening: &hardening
 services:
   assets-css:
     <<: *hardening
+    labels: *labels
     image: solidproject/community-server:7.3.0
     command:
       - "-c"
@@ -67,6 +74,7 @@ services:
 
   assets-dokieli:
     <<: *hardening
+    labels: *labels
     build: ./dokieli
     read_only: true
     tmpfs:
@@ -82,6 +90,7 @@ services:
 
   lifecycle:
     <<: *hardening
+    labels: *labels
     build: ./lifecycle
     read_only: true
     environment:
