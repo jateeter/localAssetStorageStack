@@ -595,7 +595,7 @@ the start.
   - an agent can't reach a document outside its frame.
 
 **9. Manager's instantiation component** (RealityEngine_Manager#323).
-- **Status (2026-11-10): done** (RealityEngine_Manager#329; this repo #21 adds
+- **Status (2026-11-10): done** (RealityEngine_Manager#336; this repo #21 adds
   the two routes it needs).
 - **Owner decisions (2026-11-09):**
   - the successor comes from the template machine's own
