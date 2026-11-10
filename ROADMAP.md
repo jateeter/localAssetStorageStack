@@ -595,6 +595,28 @@ the start.
   - an agent can't reach a document outside its frame.
 
 **9. Manager's instantiation component** (RealityEngine_Manager#323).
+- **Status (2026-11-10): done** (RealityEngine_Manager#329; this repo #21 adds
+  the two routes it needs).
+- **Owner decisions (2026-11-09):**
+  - the successor comes from the template machine's own
+    `document-workflow-handoff` interconnections, matched to the frame's asset
+    type; the signal (lanes) and the continuation pass on to that next clone;
+  - agents are dispatched through a pluggable driver. The simulated agent sets
+    the pattern phase 8's OpenClaw agents follow: read the frame, act on
+    documents only through `/pod`, write `return`, ask for review.
+- **Verify, live** (cpp-1 on lane TLS, an `https` instance registry, the host
+  lifecycle, real CSS documents and tokens):
+  - the registrar built a frame and Manager drove the rest;
+  - prepare, on IFRS_Sec01_GeneralPurposeFS_Verifier, parked the successor
+    IFRS_Sec03_Compliance_Assertion_Arbiter for review, holding no block while
+    it waited;
+  - a reviewer approved with a real Solid-OIDC token;
+  - the approved step ran its own agent; the arbiter hands off to nothing for
+    `COMPLIANCE-REVIEW`, so termination closed the frame and its head;
+  - restart: a frame approved while Manager was down was picked up and closed
+    when it came back.
+- **Still to do here:** removing `GUARDRAIL_CLASSES` and the machine and
+  binding routes it serves (A6), in its own change.
 - **Hears** dispatch envelopes from the OSRE, through the PE trigger dispatch.
 - **For each envelope:**
   - prologue: resume the continuation, clone, load the agents, dispatch;

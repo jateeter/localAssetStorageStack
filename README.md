@@ -126,6 +126,8 @@ Routes:
 - `GET|PUT /roles` (admin) – the role list; `PUT` takes `{ webId, roles }` and persists over `runtime/roles.json`
 - `GET /whoami` – the caller as this service sees them
 - `POST /frames` (engine, registrar) – build a frame and its first continuation `k0`; `GET /frames/:id`, `GET /frames/:id/history`, `GET /heads`
+- `GET /frames?status=open` – the engine side's work list, each frame with its current continuation (RealityEngine_Manager's instantiation component reads it, and recovers from it after a restart)
+- `POST /frames/:id/continuations/:k/capability` (engine) – the step capability of a continuation a person resumed (a reviewer's approve), issued once; an engine resume returns it with the resume
 - `PUT /frames/:id/return` – the step's return (its agent, with the frame capability)
 - `POST /frames/:id/continuations` (engine) – capture or park the next continuation
 - `POST /frames/:id/continuations/:k/resume` – `{ generation, decision? }`: `resume` with `next` (and an agent capability for an engine resume), or `escape`
