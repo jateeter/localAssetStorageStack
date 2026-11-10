@@ -7,7 +7,7 @@
 // - services: registrar automation and the engine, by a service token
 //   (>= 32 bytes), plus `admin`, which manages roles and nothing else;
 // - agents: the lifecycle service's agent principal, through a capability
-//   token (EdDSA JWT) that this service issues for one binding (D8). No agent
+//   token (EdDSA JWT) that this service issues for one frame step (D8). No agent
 //   has a WebID.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -144,7 +144,7 @@ export function serviceTokens(tokens) {
 
 // --- capability tokens (D8) ----------------------------------------------------------
 
-// The agent principal's tokens. Each names one binding and its scopes, and
+// The agent principal's tokens. Each names one frame step and its scopes, and
 // expires; the key is the service's own Ed25519 key, kept on its data volume.
 export function capabilityIssuer({ keyFile = '', issuer = 'urn:realityengine:lifecycle', ttl = 900, now = () => Math.floor(Date.now() / 1000) } = {}) {
   let privateKey;
@@ -157,12 +157,12 @@ export function capabilityIssuer({ keyFile = '', issuer = 'urn:realityengine:lif
   const kid = thumbprint(jwk);
   return {
     jwk: { ...jwk, kid, alg: 'EdDSA', use: 'sig' },
-    // A capability names one binding (`bnd`), or one frame and the continuation
-    // whose step it is for (`frm`, `knt`; ROADMAP phase 4).
-    issue({ bindingId, frameId, continuationId, scopes }) {
+    // A capability names one frame and the continuation whose step it is for
+    // (`frm`, `knt`; ROADMAP phase 4).
+    issue({ frameId, continuationId, scopes }) {
       const t = now();
       const scope = { scope: scopes.join(' ') };
-      const target = frameId ? { frm: frameId, knt: continuationId } : { bnd: bindingId };
+      const target = { frm: frameId, knt: continuationId };
       return sign({ alg: 'EdDSA', typ: 'JWT', kid }, {
         iss: issuer, aud: issuer, sub: AGENT_PRINCIPAL, ...target, ...scope,
         iat: t, exp: t + ttl, jti: crypto.randomUUID()

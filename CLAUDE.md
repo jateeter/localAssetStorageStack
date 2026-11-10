@@ -21,7 +21,7 @@ Every link is **TLS 1.3** (RealityEngine_CI#668, ROADMAP phase 1): certificates 
 Secrets live in `.secrets/` (gitignored, 0600), never under `runtime/`, which the lifecycle service mounts. The lifecycle API takes:
 - people from Solid-OIDC DPoP tokens issued by `assets-css`, with roles from `runtime/roles.json`;
 - services by tokens of at least 32 bytes;
-- agents by per-binding EdDSA capability tokens.
+- agents by EdDSA capability tokens, one per frame step.
 
 `admin` implies no other role.
 
@@ -51,7 +51,7 @@ Secrets live in `.secrets/` (gitignored, 0600), never under `runtime/`, which th
   service file, not the instance registry; gitignored runtime state.
 - `lifecycle/src/app.js`: routes, store and receipts.
 - `lifecycle/src/identity.js`: the Solid-OIDC/DPoP verifier, the role list, service tokens, capability tokens and the service's own CSS identity. `lifecycle/src/jose.js`: JWS, thumbprints and DPoP proofs on `node:crypto` (no dependencies).
-- `lifecycle/src/integrity.js`: RFC 8785 canonical JSON, Ed25519 receipts, the hash-chained fsynced event log and the pod client (ETag, SHA-256, If-Match). Integrity (ROADMAP phase 3): the service pins what the pod holds and refuses a binding or publish when it has changed (`409 pod changed since pin`).
+- `lifecycle/src/integrity.js`: RFC 8785 canonical JSON, Ed25519 receipts, the hash-chained fsynced event log and the pod client (ETag, SHA-256, If-Match). Integrity (ROADMAP phase 3): the service pins what the pod holds and refuses a frame, a resume or a write when it has changed (`409 pod changed since pin`, or the escape path at resume).
 - `lifecycle/src/lanes.js`: the lifecycle as a PE Source (ROADMAP phase 6). A frame's lanes are the reserved cells 2–7 of the clone running its step; they're allocated when the clone is made and freed at recycle, through one sensor source per engine and block on that engine's PE.
 - `lifecycle/src/frames.js`: the assetID frame, its continuation log and the `/pod` proxy (ROADMAP phase 4; RealityEngine_CI `docs/CONTINUATIONS_APPROVAL_CHAIN.md` is authoritative). `lifecycle/src/engines.js`: the engine link through the instance registry (`RE_REGISTRY_URL`, lane mTLS): continuation rule 7, a template's reserved cells, and PE sources.
 - `scripts/grant-assets.js`: gives the lifecycle WebID Read/Write on each person's `assets/` container (run by `up.js`). `scripts/verify-receipt.js`: offline receipt verification.
