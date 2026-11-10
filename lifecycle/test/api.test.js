@@ -57,14 +57,17 @@ const call = async (method, p, who, body) => {
   const r = await fetch(base + p, { method, headers, body: body && JSON.stringify(body) });
   return { status: r.status, body: await r.json() };
 };
-const manifest = { triggers: [] };
-const manifestHash = crypto.createHash('sha256').update(JSON.stringify(manifest)).digest('hex');
-
 async function setup() {
   const a = (await call('POST', '/assets', 'registrar', { podUrl: newDoc(), caseId: 'c1', revision: 'r1' })).body;
-  const m = (await call('POST', `/assets/${a.id}/machines`, 'registrar', {})).body;
-  await call('POST', `/machines/${m.id}/verify`, 'registrar', { manifest, manifestHash });
-  return { a, m };
+  return { a };
+}
+// A frame on a fresh asset, its first step resumed: the agent capability it hands out.
+async function frameStep() {
+  const { a } = await setup();
+  const f = (await call('POST', '/frames', 'engine', { documents: [{ assetId: a.id }], preparer: alice.webId,
+    case: { delimiter: 'd' }, first: { next: { engineId: 'cpp-1', templateId: 'machine-t' } } })).body;
+  const k0 = (await call('POST', `/frames/${f.frameId}/continuations/k0/resume`, 'engine', { generation: 1 })).body;
+  return { a, f, capability: k0.capability };
 }
 
 test('health and registry are open, protected resources need auth', async () => {
@@ -104,39 +107,6 @@ test('register pins revision hash; hash mismatch rejected', async () => {
   const bad = await call('POST', '/assets', 'registrar', { podUrl: newDoc('x'), caseId: 'c', revision: '1', hash: 'a'.repeat(64) });
   assert.equal(bad.status, 409);
   assert.match(bad.body.error, /does not match the pod/);
-});
-
-test('full flow: binding, proposal, receipt verification', async () => {
-  const { a, m } = await setup();
-  const b = await call('POST', `/machines/${m.id}/bindings`, 'engine', { isreSnapshot: { v: [1] }, osreOutput: { o: 1 }, revision: a.current.revision, hash: a.current.hash, generation: 1, action: 'extract' });
-  assert.equal(b.status, 201);
-  assert.deepEqual(b.body.contextGrant.scopes, ['pod:read']);
-  const agent = { capability: b.body.capability };
-  assert.equal((await call('GET', `/bindings/${b.body.id}`, 'engine')).body.capability, undefined, 'the capability is never served again');
-  const p = await call('POST', `/bindings/${b.body.id}/proposals`, agent, { result: { ok: true } });
-  assert.equal(p.status, 201);
-  assert.equal((await call('GET', `/machines/${m.id}`, agent)).body.state, 'prepare');
-  assert.equal((await call('POST', `/receipts/${p.body.receipt.id}/verify`, agent, {})).body.valid, true);
-  assert.equal((await call('POST', `/bindings/${b.body.id}/proposals`, agent, { result: 1 })).status, 409);
-});
-
-test('delayed output cannot dispatch against newer revision', async () => {
-  const { a, m } = await setup();
-  const b = (await call('POST', `/machines/${m.id}/bindings`, 'engine', { isreSnapshot: 1, osreOutput: 1, revision: 'r1', hash: a.current.hash, generation: 1, action: 'extract' })).body;
-  pod.put(a.podUrl, 'changed');
-  await call('POST', `/assets/${a.id}/revisions`, 'registrar', { revision: 'r2' });
-  assert.equal((await call('POST', `/bindings/${b.id}/proposals`, { capability: b.capability }, { result: 1 })).status, 409);
-  const late = await call('POST', `/machines/${m.id}/bindings`, 'engine', { isreSnapshot: 1, osreOutput: 1, revision: 'r1', hash: a.current.hash, generation: 1, action: 'extract' });
-  assert.equal(late.status, 409);
-});
-
-test('disallowed transitions and revoked workers rejected', async () => {
-  const { a, m } = await setup();
-  const bad = await call('POST', `/machines/${m.id}/bindings`, 'engine', { isreSnapshot: 1, osreOutput: 1, revision: 'r1', hash: a.current.hash, generation: 1, action: 'publish' });
-  assert.equal(bad.status, 409);
-  await call('POST', `/machines/${m.id}/revoke`, 'registrar', {});
-  const r = await call('POST', `/machines/${m.id}/bindings`, 'engine', { isreSnapshot: 1, osreOutput: 1, revision: 'r1', hash: a.current.hash, generation: 1, action: 'extract' });
-  assert.equal(r.status, 409);
 });
 
 test('annotations and dispositions are revision-specific; one per reviewer, keyed by WebID', async () => {
@@ -217,25 +187,23 @@ test('Solid-OIDC: the token must be DPoP-bound, fresh, from assets-css, for this
   await expect401({ authorization: `DPoP ${forgedToken}`, dpop: proof(bob, 'GET', '/whoami', forgedToken) }, 'signed by another key');
 });
 
-test('capability tokens: one binding, the agent principal, unforgeable', async () => {
-  const { a, m } = await setup();
-  const mk = async () => (await call('POST', `/machines/${m.id}/bindings`, 'engine', { isreSnapshot: 1, osreOutput: 1, revision: 'r1', hash: a.current.hash, generation: 1, action: 'extract' })).body;
-  const b1 = await mk();
+test('capability tokens: one frame step, the agent principal, unforgeable', async () => {
+  const { a, f, capability } = await frameStep();
+  const agent = { capability };
   const other = capabilityIssuer();
-  assert.equal((await call('GET', '/whoami', { capability: b1.capability })).body.principal, 'lifecycle-agent');
-  assert.equal((await call('POST', `/bindings/${b1.id}/proposals`, 'engine', { result: 1 })).status, 403, 'a service is not an agent');
-  assert.equal((await call('POST', `/bindings/${b1.id}/proposals`, bob, { result: 1 })).status, 403, 'a person is not an agent');
-  assert.equal((await call('POST', `/bindings/${b1.id}/proposals`, { capability: other.issue({ bindingId: b1.id, scopes: [] }) }, { result: 1 })).status, 401, 'another issuer');
-  const [h, , sig] = b1.capability.split('.');
-  const widened = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(b1.capability.split('.')[1], 'base64url')), scope: 'pod:read pod:write' })).toString('base64url');
-  assert.equal((await call('POST', `/bindings/${b1.id}/proposals`, { capability: `${h}.${widened}.${sig}` }, { result: 1 })).status, 401, 'tampered');
-  assert.equal((await call('POST', `/assets/${a.id}/dispositions`, { capability: b1.capability }, { revision: 'r1', decision: 'approve' })).status, 403, 'an agent cannot review');
-  // A capability for this binding does not reach another one.
-  const b2 = await mk();
-  assert.equal((await call('POST', `/bindings/${b2.id}/proposals`, { capability: b1.capability }, { result: 1 })).status, 403);
+  assert.deepEqual((await call('GET', '/whoami', agent)).body, { kind: 'agent', principal: 'lifecycle-agent', frame: f.frameId, continuation: 'k0' });
+  assert.equal((await call('GET', `/frames/${f.frameId}`, agent)).status, 200);
+  assert.equal((await call('GET', `/frames/${f.frameId}`, { capability: other.issue({ frameId: f.frameId, continuationId: 'k0', scopes: ['frame:read'] }) })).status, 401, 'another issuer');
+  const [h, , sig] = capability.split('.');
+  const widened = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(capability.split('.')[1], 'base64url')), scope: 'frame:read pod:write' })).toString('base64url');
+  assert.equal((await call('GET', `/frames/${f.frameId}`, { capability: `${h}.${widened}.${sig}` })).status, 401, 'tampered');
+  assert.equal((await call('POST', `/assets/${a.id}/dispositions`, agent, { revision: 'r1', decision: 'approve' })).status, 403, 'an agent cannot review');
+  assert.equal((await call('POST', '/assets', agent, { podUrl: newDoc(), caseId: 'c', revision: 'r1' })).status, 403, 'an agent is not a service');
+  // A capability for this frame does not reach another one.
+  const { f: g } = await frameStep();
+  assert.equal((await call('GET', `/frames/${g.frameId}`, agent)).status, 403);
   const expiredIssuer = capabilityIssuer({ ttl: -1 });
-  const expiredApp = expiredIssuer.check.bind(expiredIssuer);
-  assert.throws(() => expiredApp(expiredIssuer.issue({ bindingId: b1.id, scopes: [] })), /expired/);
+  assert.throws(() => expiredIssuer.check(expiredIssuer.issue({ frameId: f.frameId, continuationId: 'k0', scopes: [] })), /expired/);
 });
 
 test('service tokens are at least 32 bytes and carry service roles only', () => {
@@ -266,33 +234,19 @@ test('a pin is what the pod holds: ETag and SHA-256 of the bytes it served', asy
   assert.equal((await call('POST', '/assets', 'registrar', { podUrl: `${CSS}alice/assets/missing.html`, caseId: 'c', revision: 'r1' })).status, 409);
 });
 
-test('pod changed since pin: the next binding is refused', async () => {
-  const { a, m } = await setup();
+test('pod changed since pin: no frame is built on it until the edit is pinned', async () => {
+  const { a } = await setup();
   pod.put(a.podUrl, 'edited in dokieli');
-  const r = await call('POST', `/machines/${m.id}/bindings`, 'engine', { isreSnapshot: 1, osreOutput: 1, revision: 'r1', hash: a.current.hash, generation: 1, action: 'extract' });
+  const build = () => call('POST', '/frames', 'engine', { documents: [{ assetId: a.id }], preparer: alice.webId, case: { delimiter: 'd' },
+    first: { next: { engineId: 'cpp-1', templateId: 'machine-t' } } });
+  const r = await build();
   assert.equal(r.status, 409);
   assert.equal(r.body.error, 'pod changed since pin');
-  // Pinning the edit as a new revision lets the work continue on it.
-  const a2 = (await call('POST', `/assets/${a.id}/revisions`, 'registrar', { revision: 'r2' })).body;
-  const ok = await call('POST', `/machines/${m.id}/bindings`, 'engine', { isreSnapshot: 1, osreOutput: 1, revision: 'r2', hash: a2.current.hash, generation: 1, action: 'extract' });
+  // Pinning the edit as a new revision lets the work go on, on it.
+  await call('POST', `/assets/${a.id}/revisions`, 'registrar', { revision: 'r2' });
+  const ok = await build();
   assert.equal(ok.status, 201);
-});
-
-test('publish re-reads the pod before it commits', async () => {
-  const { a, m } = await setup();
-  const step = async (action, next) => {
-    const cur = (await call('GET', `/assets/${a.id}`, 'engine')).body.current;
-    const b = (await call('POST', `/machines/${m.id}/bindings`, 'engine', { isreSnapshot: 1, osreOutput: 1, revision: cur.revision, hash: cur.hash, generation: 1, action })).body;
-    return { b, p: await call('POST', `/bindings/${b.id}/proposals`, { capability: b.capability }, { result: action, next }) };
-  };
-  await step('extract'); await step('prepare'); await step('check', 'review'); 
-  const { b } = await step('review', 'publish');
-  assert.ok(b.id);
-  const pub = (await call('POST', `/machines/${m.id}/bindings`, 'engine', { isreSnapshot: 1, osreOutput: 1, revision: 'r1', hash: a.current.hash, generation: 1, action: 'publish' })).body;
-  pod.put(a.podUrl, 'edited between binding and publish');
-  const r = await call('POST', `/bindings/${pub.id}/proposals`, { capability: pub.capability }, { result: 'published' });
-  assert.equal(r.status, 409);
-  assert.equal(r.body.error, 'pod changed since pin');
+  assert.equal(ok.body.documents[0].revision, 'r2');
 });
 
 test('pod writes carry If-Match and refuse when the pod moved on', async () => {
@@ -305,27 +259,28 @@ test('pod writes carry If-Match and refuse when the pod moved on', async () => {
 });
 
 test('receipts are Ed25519 over RFC 8785 and verify offline with /keys', async () => {
-  const { a, m } = await setup();
-  const b = (await call('POST', `/machines/${m.id}/bindings`, 'engine', { isreSnapshot: 1, osreOutput: 1, revision: 'r1', hash: a.current.hash, generation: 1, action: 'extract' })).body;
-  const r = (await call('GET', `/receipts/${b.receipt}`, 'engine')).body;
+  const { a, f } = await frameStep();
+  const built = (await call('GET', `/frames/${f.frameId}/history`, 'engine')).body.find((e) => e.type === 'frame.built');
+  const r = (await call('GET', `/receipts/${built.receiptId}`, 'engine')).body;
   const keys = await (await fetch(`${base}/keys`)).json();
   assert.equal(keys.keys[0].crv, 'Ed25519');
   assert.equal(r.kid, keys.keys[0].kid);
-  assert.equal(r.etag, a.current.etag);
+  assert.equal(r.documents[0].etag, a.current.etag);
   assert.ok(verifyReceipt(r, keys), 'verifies with nothing but the receipt and the keys');
-  assert.ok(!verifyReceipt({ ...r, revision: 'r9' }, keys), 'a changed field fails');
+  assert.ok(!verifyReceipt({ ...r, preparer: 'someone-else' }, keys), 'a changed field fails');
   assert.ok(!verifyReceipt(r, receiptSigner().jwks), 'another key fails');
   // Member order does not matter: the signature is over the canonical form.
   const reordered = Object.fromEntries(Object.entries(r).reverse());
   assert.ok(verifyReceipt(reordered, keys));
-  assert.equal((await call('POST', `/receipts/${b.receipt}/verify`, 'engine', {})).body.valid, true);
+  assert.equal((await call('POST', `/receipts/${built.receiptId}/verify`, 'engine', {})).body.valid, true);
 });
 
 test('the history is append-only, hash-chained and per asset', async () => {
-  const { a, m } = await setup();
-  await call('POST', `/machines/${m.id}/bindings`, 'engine', { isreSnapshot: 1, osreOutput: 1, revision: 'r1', hash: a.current.hash, generation: 1, action: 'extract' });
+  const { a } = await setup();
+  pod.put(a.podUrl, 'second revision');
+  await call('POST', `/assets/${a.id}/revisions`, 'registrar', { revision: 'r2' });
   const h = (await call('GET', `/assets/${a.id}/history`, 'engine')).body;
-  assert.deepEqual(h.map((e) => e.type), ['asset.registered', 'machine.instantiated', 'machine.verified', 'binding.created']);
+  assert.deepEqual(h.map((e) => e.type), ['asset.registered', 'revision.pinned']);
   assert.equal(h[0].by, 'registrar');
   assert.equal(h[0].pinned.etag, a.current.etag);
   const file = path.join(registryDir, 'events.jsonl');

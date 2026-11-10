@@ -615,8 +615,10 @@ the start.
     `COMPLIANCE-REVIEW`, so termination closed the frame and its head;
   - restart: a frame approved while Manager was down was picked up and closed
     when it came back.
-- **Still to do here:** removing `GUARDRAIL_CLASSES` and the machine and
-  binding routes it serves (A6), in its own change.
+- **A6 done (2026-11-10, localAssetStorageStack#22):** `GUARDRAIL_CLASSES` is
+  removed, with the review-machine, binding and proposal routes it served.
+  Workflow rules live in the corpus (D4): templates are corpus machines,
+  Manager instantiates them, and the lifecycle service decides no transition.
 - **Hears** dispatch envelopes from the OSRE, through the PE trigger dispatch.
 - **For each envelope:**
   - prologue: resume the continuation, clone, load the agents, dispatch;

@@ -21,15 +21,6 @@ export const TLS_PROFILE = {
 };
 export const tlsServerOptions = ({ key, cert }) => ({ ...TLS_PROFILE, key, cert });
 
-// Guardrail classes: allowed actions and transitions bound to each machine at instantiation.
-export const GUARDRAIL_CLASSES = {
-  review: {
-    actions: { extract: ['prepare'], prepare: ['check'], check: ['review', 'prepare'], review: ['publish', 'prepare'], publish: [] },
-    initial: 'extract',
-    scopes: { extract: ['pod:read'], prepare: ['pod:read', 'rag:read'], check: ['pod:read', 'beacon:read', 'rag:read'], review: ['pod:read', 'beacon:read'], publish: ['pod:read', 'pod:write'] }
-  }
-};
-
 class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
@@ -38,7 +29,7 @@ const need = (cond, status, msg) => { if (!cond) throw new HttpError(status, msg
 export class Store {
   constructor(file) {
     this.file = file;
-    this.d = { assets: {}, machines: {}, bindings: {}, proposals: {}, findings: {}, dispositions: {}, receipts: {}, roles: {}, frames: {}, heads: {} };
+    this.d = { assets: {}, findings: {}, dispositions: {}, receipts: {}, roles: {}, frames: {}, heads: {} };
     if (file && fs.existsSync(file)) this.d = { ...this.d, ...JSON.parse(fs.readFileSync(file, 'utf8')) };
   }
   save() {
@@ -82,7 +73,7 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
     return r;
   };
   // Who did it, for the history.
-  const actor = (p) => (p.kind === 'person' ? p.webId : p.kind === 'agent' ? `${p.capability.sub}:${p.capability.bnd}` : p.roles[0]);
+  const actor = (p) => (p.kind === 'person' ? p.webId : p.kind === 'agent' ? `${p.capability.sub}:${p.capability.frm}` : p.roles[0]);
   // The history first (fsynced), then the state snapshot: a crash between the
   // two leaves an event the snapshot lacks, never a change with no history.
   // Frames a change touched, so their lanes are re-pushed before it is answered.
@@ -93,8 +84,6 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
     return pod.read(url);
   };
   const asset = (aid) => { const a = d().assets[aid]; need(a, 404, 'asset not found'); return a; };
-  const machine = (mid) => { const m = d().machines[mid]; need(m, 404, 'machine not found'); return m; };
-  const binding = (bid) => { const b = d().bindings[bid]; need(b, 404, 'binding not found'); return b; };
 
   const serviceRole = serviceTokens(tokens);
   const roles = roleList({ file: rolesFile, overrides: d().roles });
@@ -140,24 +129,7 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
   const applyPin = (a, pinned) => {
     a.revisions.push(pinned);
     a.current = { revision: pinned.revision, hash: pinned.hash, etag: pinned.etag };
-    for (const m of Object.values(d().machines).filter((m) => m.assetId === a.id)) {
-      m.staleRevision = m.pinned.revision !== pinned.revision;
-    }
   };
-  // Before a binding and before publish: the pod must still hold the pinned
-  // bytes under the pinned ETag.
-  async function unchangedSincePin(a) {
-    const read = await readPod(a.podUrl);
-    need(read.etag === a.current.etag && read.hash === a.current.hash, 409, 'pod changed since pin');
-  }
-
-  // Binding must reference current revision, machine generation and an allowed transition.
-  function checkBinding(b, m, a) {
-    need(m.status === 'active', 409, 'machine not active');
-    need(!m.revoked, 403, 'machine revoked');
-    need(b.generation === m.generation, 409, 'stale execution generation');
-    need(b.revision === a.current.revision && b.hash === a.current.hash, 409, 'stale document revision');
-  }
 
   const readRegistry = () => {
     need(registryFile, 503, 'instance registry unavailable');
@@ -199,85 +171,6 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
     return [201, a];
   });
   route('GET', '/assets/:id/history', ({ params }) => { asset(params.id); return [200, log.read((e) => e.assetId === params.id)]; });
-  route('POST', '/assets/:id/machines', ({ params, body, principal }) => {
-    allow(principal, 'registrar');
-    const a = asset(params.id);
-    const cls = GUARDRAIL_CLASSES[body.guardrailClass || 'review'];
-    need(cls, 400, 'unknown guardrail class');
-    const m = { id: id('machine'), assetId: a.id, guardrailClass: body.guardrailClass || 'review', rules: cls, generation: 1,
-      state: cls.initial, status: 'provisioning', revoked: false, staleRevision: false, pinned: { ...a.current }, createdAt: now() };
-    d().machines[m.id] = m;
-    commit({ type: 'machine.instantiated', assetId: a.id, machineId: m.id, by: actor(principal) });
-    return [201, m];
-  });
-  // Bundle (triggers, PE sources, context policy, manifest) verified before observations are admitted.
-  route('POST', '/machines/:id/verify', ({ params, body, principal }) => {
-    allow(principal, 'registrar');
-    const m = machine(params.id);
-    need(m.status === 'provisioning', 409, 'machine not provisioning');
-    need(body.manifestHash && body.manifestHash === sha256(JSON.stringify(body.manifest || {})), 400, 'manifest hash mismatch');
-    m.status = 'active';
-    m.manifestHash = body.manifestHash;
-    commit({ type: 'machine.verified', assetId: m.assetId, machineId: m.id, manifestHash: m.manifestHash, by: actor(principal) });
-    return [200, m];
-  });
-  route('POST', '/machines/:id/revoke', ({ params, principal }) => {
-    allow(principal, 'registrar');
-    const m = machine(params.id);
-    m.revoked = true; m.status = 'revoked'; m.generation += 1;
-    commit({ type: 'machine.revoked', assetId: m.assetId, machineId: m.id, generation: m.generation, by: actor(principal) });
-    return [200, m];
-  });
-  route('GET', '/machines/:id', ({ params }) => [200, machine(params.id)]);
-
-  // Step-binding receipt: ties the ISRE snapshot to the resulting OSRE recognition and exact asset revision.
-  route('POST', '/machines/:id/bindings', async ({ params, body, principal }) => {
-    allow(principal, 'engine');
-    const m = machine(params.id);
-    const a = asset(m.assetId);
-    need(body.isreSnapshot && body.osreOutput, 400, 'isreSnapshot and osreOutput required');
-    need(body.revision === a.current.revision && body.hash === a.current.hash, 409, 'stale document revision');
-    need(body.generation === m.generation, 409, 'stale execution generation');
-    need(m.status === 'active' && !m.revoked, 409, 'machine not active');
-    need((m.rules.actions[m.state] || []).concat(m.state).includes(body.action) || body.action === m.state, 409, 'action not permitted');
-    await unchangedSincePin(a);
-    const b = { id: id('bind'), machineId: m.id, podUrl: a.podUrl, revision: a.current.revision, hash: a.current.hash,
-      generation: m.generation, action: body.action, isreSnapshot: body.isreSnapshot, osreOutput: body.osreOutput,
-      contextGrant: { scopes: m.rules.scopes[body.action] || [], podUrl: a.podUrl },
-      predecessors: Array.isArray(body.predecessors) ? body.predecessors : [], status: 'dispatched', createdAt: now() };
-    b.receipt = receipt('step-binding', { bindingId: b.id, machineId: m.id, podUrl: a.podUrl, revision: b.revision, hash: b.hash, etag: a.current.etag, isre: sha256(JSON.stringify(b.isreSnapshot)), osre: sha256(JSON.stringify(b.osreOutput)) }).id;
-    d().bindings[b.id] = b;
-    commit({ type: 'binding.created', assetId: a.id, machineId: m.id, bindingId: b.id, action: b.action, receiptId: b.receipt, by: actor(principal) });
-    // The agent's capability for this binding (D8). It is returned once, to the
-    // engine that dispatches the agent, and never stored or served again.
-    return [201, { ...b, capability: capabilities.issue({ bindingId: b.id, scopes: b.contextGrant.scopes }) }];
-  });
-  route('GET', '/bindings/:id', ({ params }) => [200, binding(params.id)]);
-
-  route('POST', '/bindings/:id/proposals', async ({ params, body, principal }) => {
-    allow(principal, 'agent');
-    need(principal.capability.bnd === params.id, 403, 'capability is for another binding');
-    const b = binding(params.id);
-    const m = machine(b.machineId);
-    const a = asset(m.assetId);
-    checkBinding(b, m, a);
-    need(b.status === 'dispatched', 409, 'binding already completed');
-    need(body.result !== undefined, 400, 'result required');
-    // Publish is the one step that writes the pod: it must find the pinned bytes.
-    if (b.action === 'publish') await unchangedSincePin(a);
-    const p = Object.freeze({ id: id('prop'), bindingId: b.id, result: body.result, resultHash: sha256(JSON.stringify(body.result)), createdAt: now() });
-    d().proposals[p.id] = p;
-    b.status = 'completed';
-    const next = m.rules.actions[b.action] || [];
-    if (body.next !== undefined) {
-      need(next.includes(body.next), 409, 'transition not permitted');
-      m.state = body.next;
-    } else if (next.length === 1) m.state = next[0];
-    const r = receipt('proposal-commit', { proposalId: p.id, bindingId: b.id, resultHash: p.resultHash, machineState: m.state });
-    commit({ type: 'proposal.committed', assetId: a.id, machineId: m.id, bindingId: b.id, proposalId: p.id, machineState: m.state, receiptId: r.id, by: actor(principal) });
-    return [201, { proposal: p, receipt: r }];
-  });
-
   // dokieli annotations become revision-specific findings.
   route('POST', '/assets/:id/annotations', ({ params, body, principal }) => {
     allow(principal, 'reviewer');
@@ -323,7 +216,7 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
   });
   // Whoever is calling, as this service sees them.
   route('GET', '/whoami', ({ principal }) => [200, principal.kind === 'agent'
-    ? { kind: 'agent', principal: principal.capability.sub, binding: principal.capability.bnd }
+    ? { kind: 'agent', principal: principal.capability.sub, frame: principal.capability.frm, continuation: principal.capability.knt }
     : { kind: principal.kind, webId: principal.webId, roles: principal.roles }]);
   route('GET', '/receipts/:id', ({ params }) => {
     const r = d().receipts[params.id];

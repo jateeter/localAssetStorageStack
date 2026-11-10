@@ -7,7 +7,7 @@ import { engineLink } from './engines.js';
 const fail = (message) => { console.error(message); process.exit(1); };
 
 // Service tokens are for services only (ROADMAP phase 2): admin manages roles,
-// registrar registers assets, engine creates bindings. People sign in with
+// registrar registers assets, engine runs frames' steps. People sign in with
 // Solid-OIDC; agents carry capability tokens.
 const tokens = {
   admin: process.env.ADMIN_TOKEN,

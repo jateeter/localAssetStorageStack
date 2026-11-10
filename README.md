@@ -6,7 +6,7 @@ A local instantiation of the [dokieli](https://dokieli.github.io/) asset managem
 |---|---|---|
 | `assets-css` | `https://assets-css.localhost:13443/` | Solid Community Server: authenticated storage of dokieli documents (PODs) |
 | `assets-dokieli` | `https://assets-dokieli.localhost:13444/` | dokieli authoring/annotation UI (static build) |
-| `lifecycle` | `https://lifecycle:8443/` on the network; a loopback host port from `runtime/registry.json` | Canonical lifecycle API (documents, review machines, bindings, findings) |
+| `lifecycle` | `https://lifecycle:8443/` on the network; a loopback host port from `runtime/registry.json` | Canonical lifecycle API (documents, assetID frames and their continuations, findings, dispositions) |
 
 **Every link is TLS 1.3** (RealityEngine_CI#668): the profile's suites, `X25519MLKEM768` key exchange, certificates from the suite's PKI (RealityEngine_CI `scripts/lib/re_pki.py`). No service has a plaintext listener: plain HTTP to any port gets no reply. The lifecycle service refuses to start without its certificate and accepts only `https` pod URLs. Two of the ports are fixed (ROADMAP D7) because a pod's URL includes its port; `up.js` fails, naming the holder, if one is taken.
 
@@ -26,7 +26,7 @@ People sign in to dokieli with **Solid-OIDC** against `assets-css`: in dokieli, 
 
 The lifecycle service pins **what the pod holds**, never what it is sent (ROADMAP phase 3):
 - **Pinning.** Registering an asset or a revision makes the service read the document itself, with its own DPoP identity. It records the `ETag` and the SHA-256 of the exact bytes. A registrar may send the `hash` it expects, which must match (`409` otherwise). It may not send `content`.
-- **Before every binding, and before publish,** the service reads the document again. A changed `ETag` or hash is refused with `409 pod changed since pin`. Pin the edit as a new revision to carry on. Writes carry `If-Match: <pinned ETag>`.
+- **Before a frame is built, at every resume, and before every write,** the service reads the document again. A changed `ETag` or hash refuses the frame (`409 pod changed since pin`), takes the escape path at resume, or refuses the write; pin the edit as a new revision to carry on. Writes carry `If-Match: <pinned ETag>`.
 - **Access.** `up.js` gives each person an `assets/` container (`scripts/grant-assets.js`). Its ACL gives the owner Read/Write/Control and the lifecycle WebID Read/Write, on the container and everything in it. Workflow documents are kept there. The rest of a pod stays private, and the service can't pin it (`409 … cannot read`).
 - **History.** Every change is appended to `/data/events.jsonl` and fsynced before it is answered. Each line is chained to the one before by SHA-256, so a rewritten past is detected; the service refuses to start on a broken log. Read an asset's history at `GET /assets/:id/history`.
 - **Receipts** are Ed25519 over the RFC 8785 canonical form. The public key is at `GET /keys` (open). Verify one offline with `node scripts/verify-receipt.js receipt.json keys.json`.
@@ -110,17 +110,14 @@ The script then writes `runtime/registry.json`, this stack's own service file (n
 
 Every caller is one of three kinds of principal (ROADMAP phase 2):
 - **people**: `Authorization: DPoP <token>` plus a `DPoP` proof. The token must come from `assets-css`, be DPoP-bound (`cnf.jkt`), be fresh, and have `aud` including `solid`. The proof must be for this method and URL and is accepted once. The principal is the token's WebID, with roles (`author`, `reviewer`) from the role list. A body field naming a person (`reviewer`, `author`) is refused unless it names the caller.
-- **services**: `Authorization: Bearer <service token>`, each token at least 32 bytes. `registrar` registers assets, `engine` creates bindings, and `admin` manages roles and nothing else.
-- **agents**: `Authorization: Bearer <capability>`, an EdDSA JWT this service issues for one binding (D8). It is returned once, in the binding's creation response, and is valid only for that binding's proposals. Agents have no WebID.
+- **services**: `Authorization: Bearer <service token>`, each token at least 32 bytes. `registrar` registers assets, `engine` runs frames' steps (RealityEngine_Manager's instantiation component), and `admin` manages roles and nothing else.
+- **agents**: `Authorization: Bearer <capability>`, an EdDSA JWT this service issues for one frame step (D8): returned once, with the engine side's resume (or by `POST /frames/:id/continuations/:k/capability` for a step a person resumed), and valid only for that frame and step. Agents have no WebID.
 
 Routes:
 - `GET /health` (open)
 - `GET /registry` (open; the stack's service addresses and the lifecycle host port)
 - `POST /assets` / `GET /assets[/:id]` – register a CSS POD document; pins revision, hash, case, dependencies, authority (`podUrl` must be on `CSS_ORIGIN`)
 - `POST /assets/:id/revisions` – pin new revision (existing machines become stale)
-- `POST /assets/:id/machines` – instantiate a review machine from a guardrail class; `POST /machines/:id/verify` verifies the manifest hash before admission; `POST /machines/:id/revoke`
-- `POST /machines/:id/bindings` (engine) – step-binding receipt connecting ISRE snapshot, OSRE output, exact revision, generation and scoped context grant, plus the agent's `capability`; stale revision/generation rejected
-- `POST /bindings/:id/proposals` (agent, with that binding's capability) – immutable proposal, validated, committed with signed receipt
 - `POST|GET /assets/:id/annotations` (reviewer) – dokieli annotations as revision-specific findings, authored by the caller's WebID
 - `POST /assets/:id/dispositions` (reviewer) – decisions by the caller's WebID, one per reviewer per revision
 - `GET|PUT /roles` (admin) – the role list; `PUT` takes `{ webId, roles }` and persists over `runtime/roles.json`
