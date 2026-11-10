@@ -645,6 +645,10 @@ the start.
 - **Verify:** the dashboard renders from a local-lane run of phase 11's chain.
 
 **11. Suite integration and regression** (A9; RealityEngine_CI#706, #715).
+- **Status:** the start and stop, the smoke test and the 3-of-3 chain land
+  with RealityEngine_CI's `--assets` and the regression `asset-workflow` stage
+  (`scripts/smoke.js`, `scripts/chain-regression.js`). The release bundle
+  follows in its own PR.
 - **Start and stop:** `startUniverse.sh --assets` and `stopUniverse.sh` start and
   stop this stack, and write the lifecycle and CSS addresses into
   `config/integrations.json`.

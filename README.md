@@ -139,5 +139,23 @@ Runtime integration with ISRE/OSRE, PE, and OpenClaw is pending; this repo provi
 
 Known gaps and the plan to close them: [ROADMAP.md](ROADMAP.md), from the review in `docs/localAssetStorageStack Gaps.pdf`.
 
+## Checks against a running universe
+
+Both run against a stack this repo started (`node scripts/up.js`, or RealityEngine_CI's `startUniverse.sh --assets`). Run them with `node --dns-result-order=ipv4first` and `NODE_EXTRA_CA_CERTS` set to the lane CA. Each takes an optional report path.
+
+- **`scripts/smoke.js`** checks four things:
+  - every seeded pod and WebID is served, and registration is closed;
+  - a pin read back from CSS (the lifecycle's ETag is CSS's);
+  - a receipt verifies offline with `/keys` alone;
+  - pod URL, WebID and the lifecycle's asset are the same after a restart.
+- **`scripts/chain-regression.js`** runs the IFRS approval chain on every voting engine, with Manager running each step. It needs `RE_REGISTRY_URL`, `MANAGER_URL` and `RE_HARNESS_TLS_CA/CERT/KEY`.
+  - IFRS_Sec01_GeneralPurposeFS_Verifier parks IFRS_Sec03_Compliance_Assertion_Arbiter for review, holding no block.
+  - The preparer can't approve; the reviewer approves; a replay is refused.
+  - The arbiter step terminates and closes the head.
+  - A stale upstream takes the escape path.
+  - `clone.maxActive + 1` shows the pool limit, and the pool is as it was after recycling.
+
+  The three engines' outcomes must be identical (RealityEngine_CI#715). RealityEngine_CI's regression `asset-workflow` stage runs both.
+
 ## Test
 `cd lifecycle && npm test` and `node --test scripts/*.test.js` (CI also validates compose and smoke-tests the container).
