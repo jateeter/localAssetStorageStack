@@ -6,6 +6,7 @@ import { Raw, mountFrames } from './frames.js';
 import { mountLanes } from './lanes.js';
 import { workflowMetrics } from './metrics.js';
 import { mountInbox } from './inbox.js';
+import { reviewAccess } from './access.js';
 import { IntegrityError, eventLog, receiptSigner, verifyReceipt } from './integrity.js';
 import { AuthError, capabilityIssuer, isCapability, roleList, serviceTokens, solidOidcVerifier } from './identity.js';
 
@@ -73,7 +74,12 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
   // The pods' side of the asset inboxes (inbox.inboxClient, ROADMAP phase 5):
   // dokieli's annotation notifications become findings. Unset, assets get no
   // inbox.
-  inbox = null }) {
+  inbox = null,
+  // Review access (access.accessClient, ROADMAP phase 5; owner 2026-11-11):
+  // the resuming role reads a frame's documents while it is parked for them.
+  // serviceWebId is this service's WebID, kept on those ACLs. Unset, no ACL is
+  // written.
+  access = null, serviceWebId = () => null }) {
   engineCheck ||= link.configured ? (e, t) => link.carries(e, t) : async () => 'unchecked';
   const d = () => store.d;
   const receipt = (type, body) => {
@@ -107,6 +113,8 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
 
   const serviceRole = serviceTokens(tokens);
   const roles = roleList({ file: rolesFile, overrides: d().roles });
+  const holders = (role) => Object.entries(roles.all()).filter(([, rs]) => rs.includes(role)).map(([w]) => w);
+  const reviews = access ? reviewAccess({ d, commit: (e) => commit(e), holders, serviceWebId }, access) : null;
 
   // Resolves the caller to one principal: { kind: 'service', roles: [role] },
   // { kind: 'person', webId, roles } or { kind: 'agent', capability }.
@@ -307,6 +315,7 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
                 const frames = [...touched];
                 touched = null;
                 for (const fid of frames) await lanes.refresh(fid);
+                for (const fid of frames) await reviews?.sync(fid);
                 return out;
               } finally { touched = null; }
             });
@@ -330,6 +339,7 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
   const server = tls ? https.createServer(tlsServerOptions(tls), handler) : http.createServer(handler);
   // server.js starts the inbox watchers once the service identity is ready.
   server.inboxes = inboxes;
+  server.reviews = reviews;
   server.on('close', () => inboxes?.stop());
   return server;
 }

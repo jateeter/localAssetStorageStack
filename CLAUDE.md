@@ -58,6 +58,8 @@ Secrets live in `.secrets/` (gitignored, 0600), never under `runtime/`, which th
   - Each asset's inbox is `<pod>/assets/inbox/<assetId>/`, linked from the document's `.meta`. The link is written before every pin, because it moves the ETag.
   - The service watches each inbox over WebSocketChannel2023 and sweeps it on subscribe.
   - Each item becomes a finding with `attribution` `claimed` or `corroborated`. A finding is never an approval.
+- `lifecycle/src/access.js`: review access (owner, 2026-11-11). The resuming role reads a frame's documents only while it is parked for a person: a per-document ACL written by the service and deleted after. The lifecycle holds `acl:Control` on `assets/`.
+- `dokieli/patches/`: the suite's patches to the pinned dokieli commit, applied in the image build (0001: the annotation form also reads the inbox `Link` header).
 - `lifecycle/src/metrics.js`: `GET /metrics` for RealityEngine_CI's asset-workflow dashboard (ROADMAP phase 10). Gauges are read from the frames at scrape time, and event counters start from the log, so a restart keeps them. It holds aggregates only. `server.js` writes each committed event to stdout as a JSON line for Loki.
 - `scripts/grant-assets.js`: gives the lifecycle WebID Read/Write on each person's `assets/` container (run by `up.js`). `scripts/verify-receipt.js`: offline receipt verification.
 - `scripts/smoke.js`, `scripts/chain-regression.js`: checks against a running universe (ROADMAP phase 11): the local-lane smoke test, and the IFRS chain on cpp, lsp and scala compared 3-of-3. RealityEngine_CI's regression `asset-workflow` stage runs both; `scripts/lib/universe.js` is what they share (env in its header).

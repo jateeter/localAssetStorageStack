@@ -104,6 +104,15 @@ ROADMAP phase 5 (`lifecycle/src/inbox.js`).
   - **An inbox item has no authenticated sender.** CSS checks that the poster may append, not who they are, and dokieli's `actor` is the sender's own claim. So a finding's `author` is claimed, with `attribution: "claimed"`.
   - It is `"corroborated"` when the annotation lives in that author's own pod and names the same creator.
   - **Neither is ever an approval.** A reviewer's decision is a resume through the API with their Solid-OIDC token.
+- **dokieli itself** (checked through its UI, 2026-11-11):
+  - It writes a flattened `Announce` naming the annotation, and keeps the annotation in the annotator's own store. The service fetches the annotation from that store. `lifecycle/test/fixtures/` holds both, exactly as dokieli wrote them.
+  - It needs the person's profile to name their storage (`pim:storage`) before it will set up an annotation store and post. `grant-assets.js` adds it, because CSS's static seed leaves it out.
+  - Its annotation form found a document's inbox only in the document body. Our image carries `dokieli/patches/0001-annotation-inbox-from-link-header.patch`, which also reads the `Link` header (LDN discovery), so documents stay untouched (owner decision, 2026-11-11).
+- **Review access** (`lifecycle/src/access.js`; owner decision, 2026-11-11):
+  - While an open frame is parked for a person, every WebID with the resuming role may read its documents. The service writes each document's own ACL: owner and service full, readers Read only.
+  - When nothing is parked for a person on that document, the service deletes the ACL, so the `assets/` default applies again.
+  - Each change is logged as `review.access` on the asset. An ACL write leaves the document's ETag unchanged, so no pin moves.
+  - `grant-assets.js` gives the lifecycle `acl:Control` on `assets/` for this.
 
 ## Run
 ```

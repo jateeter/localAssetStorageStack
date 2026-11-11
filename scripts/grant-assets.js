@@ -5,7 +5,9 @@
 // For every person in .secrets/accounts.json: sign in as them, make sure
 // `<pod>/assets/` exists, and set that container's ACL to
 // - the owner: Read, Write, Control (as on the rest of their pod);
-// - the lifecycle service's WebID: Read, Write;
+// - the lifecycle service's WebID: Read, Write, Control — Control so it can
+//   give the reviewers of a parked frame Read on its documents, and take it
+//   back (lifecycle/src/access.js; owner decision 2026-11-11);
 // both on the container and, by default, on everything in it. Documents under a
 // workflow are kept there; the rest of the pod stays private to its owner.
 //
@@ -16,7 +18,14 @@
 //   what arrives);
 // - every other seeded person: Append only, on every inbox, so dokieli can post
 //   a reviewer's annotation notification and nobody reads another's.
-// Idempotent: the same ACLs are written every run.
+//
+// And each profile names the person's storage (pim:storage, their pod root).
+// CSS's static seed writes a profile without it, and dokieli needs it to set up
+// an annotation store (a container and a type index registration), without
+// which it posts no annotation and so sends no inbox notification (ROADMAP
+// phase 5).
+// Idempotent: the same ACLs are written every run, and the profile is patched
+// only when it lacks the triple.
 //
 // Run by up.js once the stack is healthy, with the install CA trusted
 // (NODE_EXTRA_CA_CERTS) and IPv4 first (*.localhost resolves to ::1, and the
@@ -44,7 +53,7 @@ const assetsAcl = (owner, service) => `@prefix acl: <http://www.w3.org/ns/auth/a
   acl:agent <${service}>;
   acl:accessTo <./>;
   acl:default <./>;
-  acl:mode acl:Read, acl:Write.
+  acl:mode acl:Read, acl:Write, acl:Control.
 `;
 
 const inboxAcl = (owner, service, others) => `@prefix acl: <http://www.w3.org/ns/auth/acl#>.
@@ -82,6 +91,18 @@ async function grant(me, container, body) {
   if (!put.ok) throw new Error(`writing ${acl}: ${put.status}`);
 }
 
+async function nameStorage(me, webId, storage) {
+  const profile = webId.split('#')[0];
+  // N-Triples: every IRI in full, whatever prefixes a Turtle serializer chose.
+  const r = await me.fetch(profile, { headers: { accept: 'application/n-triples' } });
+  if (!r.ok) throw new Error(`${profile}: ${r.status}`);
+  if ((await r.text()).includes('<http://www.w3.org/ns/pim/space#storage>')) return false;
+  const patch = `@prefix solid: <http://www.w3.org/ns/solid/terms#>.\n_:s a solid:InsertDeletePatch; solid:inserts { <${webId}> <http://www.w3.org/ns/pim/space#storage> <${storage}> . }.`;
+  const p = await me.fetch(profile, { method: 'PATCH', headers: { 'content-type': 'text/n3' }, body: patch });
+  if (!p.ok) throw new Error(`naming the storage in ${profile}: ${p.status}`);
+  return true;
+}
+
 const aclOf = (response, url) => {
   const link = response.headers.get('link') || '';
   const m = link.match(/<([^>]+)>\s*;\s*rel="acl"/);
@@ -93,9 +114,11 @@ for (const [pod, account] of Object.entries(accounts)) {
   if (pod === SERVICE) continue;
   const me = serviceIdentity({ cssBase: CSS_BASE, account, credentialsFile: path.join(secretsDir, `${pod}-client.json`) });
   await me.provision();
+  const storage = new URL(`${pod}/`, CSS_BASE).href;
+  if (await nameStorage(me, webIdOf(pod), storage)) console.log(`grant-assets: ${webIdOf(pod)} — pim:storage ${storage}`);
   const container = new URL(`${pod}/assets/`, CSS_BASE).href;
   await grant(me, container, assetsAcl(webIdOf(pod), lifecycle));
-  console.log(`grant-assets: ${container} — ${webIdOf(pod)} (owner), ${lifecycle} (read, write)`);
+  console.log(`grant-assets: ${container} — ${webIdOf(pod)} (owner), ${lifecycle} (read, write, control)`);
   const others = Object.keys(accounts).filter((p) => p !== SERVICE && p !== pod).map((p) => webIdOf(p));
   await grant(me, `${container}inbox/`, inboxAcl(webIdOf(pod), lifecycle, others));
   console.log(`grant-assets: ${container}inbox/ — ${webIdOf(pod)} (owner), ${lifecycle} (read, write), ${others.length} others (append)`);

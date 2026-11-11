@@ -30,6 +30,12 @@ const certFile = path.join(dir, 'cert.pem');
 execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:secp384r1', '-nodes', '-sha384',
   '-days', '1', '-subj', '/CN=lifecycle', '-addext', 'subjectAltName=DNS:lifecycle', '-keyout', keyFile, '-out', certFile], { stdio: 'ignore' });
 let server, base, receipts;
+// Review access as the pod sees it: which documents have their own ACL, and its readers.
+const acls = new Map();
+const access = {
+  async grant(uri, body) { acls.set(uri, [...body.matchAll(/acl:agent ([^;]+);[^#]*acl:mode acl:Read\.$/gm)].flatMap((m) => [...m[1].matchAll(/<([^>]+)>/g)].map((x) => x[1]))); },
+  async revoke(uri) { acls.delete(uri); }
+};
 let n = 0;
 
 test.before(async () => {
@@ -38,6 +44,7 @@ test.before(async () => {
   receipts = receiptSigner();
   server = createApp({
     tokens, podOrigin: CSS.slice(0, -1), rolesFile, capabilities: capabilityIssuer(), pod: pod.client, receipts,
+    access, serviceWebId: () => `${CSS}lifecycle/profile/card#me`,
     log: eventLog({ file: path.join(dir, 'events.jsonl') }),
     verifyPerson: solidOidcVerifier({ issuers: [CSS], fetchJson: issuer.fetchJson }),
     engineCheck: async (engineId, templateId) => (templateId === 'machine-gone' || engineId === 'cpp-9' ? 'missing' : 'carries'),
@@ -92,7 +99,7 @@ const capture = (f, body) => call('POST', `/frames/${f.frameId}/continuations`, 
 const get = async (f) => (await call('GET', `/frames/${f.frameId}`, 'engine')).body;
 
 test('the IFRS approval chain: prepare → review (parked) → approve → record → head closed', async () => {
-  const { f } = await build();
+  const { a, f } = await build();
   assert.equal(f.continuations[0].continuationId, 'k0');
   assert.equal(f.headStatus, 'DRAFT');
   assert.ok(f.pointer.url.endsWith(`/${f.frameId}.json`) && !f.pointer.error, 'the pod holds a pointer to the frame');
@@ -112,8 +119,13 @@ test('the IFRS approval chain: prepare → review (parked) → approve → recor
   assert.equal(k2.body.continuation.status, 'parked');
   assert.equal(k2.body.continuation.resumableBy.excludeIdentity, alice.webId, 'the preparer is excluded by default');
   assert.equal((await get(f)).headStatus, 'IN_REVIEW');
+  // While it waits, the reviewers read the document; only then.
+  assert.deepEqual(acls.get(a.podUrl), [alice.webId, bob.webId].sort(), 'the reviewer role reads the parked frame\'s document');
   // The human step: bob approves the exact pinned revision.
   const review = await resume(f, 'k2', bob, { generation: 3, decision: 'approve' });
+  assert.equal(acls.has(a.podUrl), false, 'resumed: the reviewers\' read is taken back');
+  const granted = (await call('GET', `/assets/${a.id}/history`, 'engine')).body.filter((e) => e.type === 'review.access').map((e) => e.readers.length);
+  assert.deepEqual(granted, [2, 0]);
   assert.equal(review.body.outcome, 'resume');
   assert.equal(review.body.capability, undefined, 'a person resumes; no agent capability is handed out');
   assert.equal((await get(f)).headStatus, 'APPROVED');
