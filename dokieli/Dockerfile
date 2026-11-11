@@ -8,6 +8,13 @@
 # and `--immutable` refuses to build if the lockfile would change. Node stopped
 # bundling Corepack in 25, so it is installed at a pinned version.
 #
+# patches/ holds the suite's changes to that commit, applied in order and
+# refused if one does not apply cleanly (a moved pin must carry them forward):
+# - 0001: the annotation form also finds a document's inbox in its Link header
+#   (LDN discovery), which the lifecycle service writes through the document's
+#   .meta (localAssetStorageStack ROADMAP phase 5; owner decision 2026-11-11).
+#   Offered upstream.
+#
 # The Node base follows the suite's minor (RealityEngine_CI .nvmrc,
 # advanced by scripts/advance-node.sh).
 FROM node:26.12-alpine AS build
@@ -20,6 +27,8 @@ RUN git init -q . \
  && git fetch -q --depth 1 origin "${DOKIELI_COMMIT}" \
  && git checkout -q FETCH_HEAD \
  && test "$(git rev-parse HEAD)" = "${DOKIELI_COMMIT}"
+COPY patches /patches
+RUN for p in /patches/*.patch; do git apply --check "$p" && git apply "$p" || exit 1; done
 RUN npm install -g --no-fund --no-audit "corepack@${COREPACK_VERSION}" \
  && corepack enable \
  && yarn install --immutable \

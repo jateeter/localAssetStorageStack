@@ -5,7 +5,9 @@
 // For every person in .secrets/accounts.json: sign in as them, make sure
 // `<pod>/assets/` exists, and set that container's ACL to
 // - the owner: Read, Write, Control (as on the rest of their pod);
-// - the lifecycle service's WebID: Read, Write;
+// - the lifecycle service's WebID: Read, Write, Control — Control so it can
+//   give the reviewers of a parked frame Read on its documents, and take it
+//   back (lifecycle/src/access.js; owner decision 2026-11-11);
 // both on the container and, by default, on everything in it. Documents under a
 // workflow are kept there; the rest of the pod stays private to its owner.
 //
@@ -51,7 +53,7 @@ const assetsAcl = (owner, service) => `@prefix acl: <http://www.w3.org/ns/auth/a
   acl:agent <${service}>;
   acl:accessTo <./>;
   acl:default <./>;
-  acl:mode acl:Read, acl:Write.
+  acl:mode acl:Read, acl:Write, acl:Control.
 `;
 
 const inboxAcl = (owner, service, others) => `@prefix acl: <http://www.w3.org/ns/auth/acl#>.
@@ -116,7 +118,7 @@ for (const [pod, account] of Object.entries(accounts)) {
   if (await nameStorage(me, webIdOf(pod), storage)) console.log(`grant-assets: ${webIdOf(pod)} — pim:storage ${storage}`);
   const container = new URL(`${pod}/assets/`, CSS_BASE).href;
   await grant(me, container, assetsAcl(webIdOf(pod), lifecycle));
-  console.log(`grant-assets: ${container} — ${webIdOf(pod)} (owner), ${lifecycle} (read, write)`);
+  console.log(`grant-assets: ${container} — ${webIdOf(pod)} (owner), ${lifecycle} (read, write, control)`);
   const others = Object.keys(accounts).filter((p) => p !== SERVICE && p !== pod).map((p) => webIdOf(p));
   await grant(me, `${container}inbox/`, inboxAcl(webIdOf(pod), lifecycle, others));
   console.log(`grant-assets: ${container}inbox/ — ${webIdOf(pod)} (owner), ${lifecycle} (read, write), ${others.length} others (append)`);

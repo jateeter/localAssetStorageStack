@@ -4,6 +4,7 @@ import { MIN_SERVICE_TOKEN, capabilityIssuer, serviceIdentity, solidOidcVerifier
 import { IntegrityError, eventLog, podClient, receiptSigner } from './integrity.js';
 import { engineLink } from './engines.js';
 import { inboxClient } from './inbox.js';
+import { accessClient } from './access.js';
 
 const fail = (message) => { console.error(message); process.exit(1); };
 
@@ -63,6 +64,15 @@ const server = createApp({
       return identity.fetch(url, init);
     }
   }),
+  // Review access: the reviewers' read on a parked frame's documents (ROADMAP
+  // phase 5), written as the service.
+  access: accessClient({
+    fetchImpl: (url, init) => {
+      if (identityState.status !== 'ready') throw new IntegrityError(503, 'the service identity is not ready');
+      return identity.fetch(url, init);
+    }
+  }),
+  serviceWebId: () => identity.webId,
   pod: podClient({
     fetchImpl: (url, init) => {
       if (identityState.status !== 'ready') throw new IntegrityError(503, 'the service identity is not ready');
@@ -94,6 +104,7 @@ for (let attempt = 1; ; attempt += 1) {
     identityState = { status: 'ready', webId: identity.webId };
     console.log(`lifecycle: service identity ${identity.webId}`);
     server.inboxes?.start();
+    server.reviews?.reconcile().catch((e) => console.error(`review access: ${e.message}`));
     break;
   } catch (e) {
     identityState = { status: 'error', error: e.message };

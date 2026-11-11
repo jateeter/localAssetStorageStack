@@ -1,0 +1,27 @@
+diff --git a/src/doc.js b/src/doc.js
+index 5df27cb..099862a 100644
+--- a/src/doc.js
++++ b/src/doc.js
+@@ -2909,13 +2909,21 @@ function getDocumentInboxFromDOM() {
+   try { return new URL(value, Config.DocumentURL).href; } catch { return; }
+ }
+ 
++// LDN discovery also allows the inbox in a Link header (https://www.w3.org/TR/ldn/#discovery),
++// as a server writes it from the resource's description (e.g. CSS's .meta)
++function getDocumentInboxFromLinkHeader() {
++  const linkHeaders = Config.Resource?.[Config.DocumentURL]?.headers?.linkHeaders;
++  if (!linkHeaders?.has('rel', ns.ldp.inbox.value)) return;
++  return sanitizeIRI(linkHeaders.rel(ns.ldp.inbox.value)[0].uri);
++}
++
+ // Inboxes this post can notify; each checkbox value is an inbox URL
+ export function getAnnotationInboxLocationHTML(action) {
+   if (action === 'bookmark') return '';
+ 
+   var inboxes = [];
+ 
+-  var documentInbox = Config.Resource[Config.DocumentURL]?.inbox?.[0] || getDocumentInboxFromDOM();
++  var documentInbox = Config.Resource[Config.DocumentURL]?.inbox?.[0] || getDocumentInboxFromDOM() || getDocumentInboxFromLinkHeader();
+   if (documentInbox) {
+     // Checked state is derived from the access and encrypt toggles on popup open
+     inboxes.push({ suffix: 'document', url: documentInbox, label: i18n.t('annotation-inbox.document.label.textContent'), i18nKey: 'annotation-inbox.document.label', className: 'editor-form-notify-inbox' });

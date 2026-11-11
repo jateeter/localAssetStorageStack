@@ -545,8 +545,15 @@ A5). The core of the integration.
   - **That run found three things:**
     - dokieli writes a flattened `Announce` and keeps the annotation in the annotator's store, which the parser now handles; the fixtures in `lifecycle/test/fixtures/` are dokieli's own output;
     - dokieli needs the profile's `pim:storage` before it sets up a store, which `grant-assets.js` now adds;
-    - **open:** dokieli's annotation form reads a document's inbox from the document body, not the `Link` header.
-  - **Open:** reviewers can't read the documents they review (403 under `assets/`).
+    - dokieli's annotation form reads a document's inbox from the document body only, not the `Link` header.
+  - **Owner decisions (2026-11-11):**
+    - **Patch dokieli:** our image carries a patch that also reads the `Link` header, and offers it upstream. Documents stay untouched.
+    - **Reviewers read only while parked:** `lifecycle/src/access.js` writes a document ACL granting Read to the resuming role while an open frame is parked for a person, and deletes it otherwise. The lifecycle holds `acl:Control` on `assets/`.
+  - **Verified live (2026-11-11):**
+    - the reviewer got 403 before the review and 200 while parked;
+    - in the patched dokieli, they commented on a document whose inbox is only in its `Link` header, and the comment became a `corroborated` finding by them, with its text;
+    - they approved through the API, the head moved to APPROVED, and their read was revoked (403);
+    - the universe chain still passed, identical 3-of-3.
 - **Inboxes:** each asset gets an inbox container in its pod; dokieli's
   annotations arrive there as Linked Data Notifications.
 - **Subscription:** the service subscribes through CSS 7's Solid Notifications
