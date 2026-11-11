@@ -42,13 +42,37 @@ export function inboxOf(podUrl, assetId) {
 // --- reading JSON-LD without a library: compact (an @context with short
 // names, or as:/oa: prefixes) or expanded (full IRIs) ---------------------------
 
-const nodesOf = (json) => {
+// Every node object, with relative ids resolved against `base` (the document
+// it came from: "" is the document itself) and the objects that share an id
+// merged. dokieli's inbox items are flattened, one statement per object, so a
+// node's type, actor and object arrive in separate objects with the same id.
+const nodesOf = (json, base = null) => {
+  const resolve = (iri) => {
+    if (typeof iri !== 'string' || !base) return iri;
+    try { return new URL(iri, base).href; } catch { return iri; }
+  };
+  const byId = new Map();
   const out = [];
   const walk = (v) => {
     if (Array.isArray(v)) return v.forEach(walk);
     if (!v || typeof v !== 'object') return;
     if (v['@graph']) walk(v['@graph']);
-    if (v['@id'] || v.id || v['@type'] || v.type) out.push(v);
+    const rawId = v['@id'] ?? v.id;
+    if (rawId !== undefined || v['@type'] || v.type) {
+      const node = rawId === undefined ? v : { ...v, '@id': resolve(rawId) };
+      if (rawId !== undefined) delete node.id;
+      const key = node['@id'];
+      if (key !== undefined && byId.has(key)) {
+        const into = byId.get(key);
+        for (const [k, x] of Object.entries(node)) {
+          if (k === '@id' || k === '@context') continue;
+          into[k] = into[k] === undefined ? x : [].concat(into[k], x);
+        }
+      } else {
+        if (key !== undefined) byId.set(key, node);
+        out.push(node);
+      }
+    }
     for (const [k, x] of Object.entries(v)) if (k !== '@graph' && k !== '@context' && typeof x === 'object') walk(x);
   };
   walk(json);
@@ -71,8 +95,8 @@ const typesOf = (node) => [].concat(node['@type'] ?? node.type ?? []).map(local)
 
 // The activity dokieli posts to an inbox (notifyInbox): its type, the claimed
 // actor, the annotation it announces (object) and the document it is about.
-export function parseActivity(json) {
-  const nodes = nodesOf(json);
+export function parseActivity(json, base = null) {
+  const nodes = nodesOf(json, base);
   const node = nodes.find((n) => typesOf(n).some((t) => ACTIVITIES.includes(t))) || nodes.find((n) => values(n, 'actor').length);
   if (!node) return null;
   const object = values(node, 'object')[0];
@@ -90,23 +114,26 @@ export function parseActivity(json) {
 
 // A Web Annotation (dokieli's note), wherever it sits in the graph: its
 // creator, motivation, body text and the source it targets.
-export function parseAnnotation(json, objectIri = null) {
-  const nodes = nodesOf(json);
-  const base = objectIri ? objectIri.split('#')[0] : null;
+export function parseAnnotation(json, objectIri = null, base = null) {
+  const nodes = nodesOf(json, base);
+  const objectDoc = objectIri ? objectIri.split('#')[0] : null;
   const node = (objectIri && nodes.find((n) => idOf(n) === objectIri && typesOf(n).includes('Annotation')))
-    || nodes.find((n) => typesOf(n).includes('Annotation') && (!base || !idOf(n) || idOf(n).split('#')[0] === base))
+    || nodes.find((n) => typesOf(n).includes('Annotation') && (!objectDoc || !idOf(n) || idOf(n).split('#')[0] === objectDoc))
     || nodes.find((n) => typesOf(n).includes('Annotation'));
   if (!node) return null;
+  const abs = (iri) => { try { return base && typeof iri === 'string' ? new URL(iri, base).href : iri; } catch { return iri; } };
   const bodyNode = values(node, 'hasBody', 'body')[0];
-  const bodyObj = bodyNode && typeof bodyNode === 'object' ? (nodes.find((n) => idOf(n) && idOf(n) === idOf(bodyNode)) || bodyNode) : null;
+  const bodyObj = bodyNode && typeof bodyNode === 'object' ? (nodes.find((n) => idOf(n) && idOf(n) === abs(idOf(bodyNode))) || bodyNode) : null;
   const targetNode = values(node, 'hasTarget', 'target')[0];
-  const targetObj = targetNode && typeof targetNode === 'object' ? (nodes.find((n) => idOf(n) && idOf(n) === idOf(targetNode)) || targetNode) : null;
+  const targetObj = targetNode && typeof targetNode === 'object' ? (nodes.find((n) => idOf(n) && idOf(n) === abs(idOf(targetNode))) || targetNode) : null;
   return {
     id: idOf(node),
     creator: first(node, 'creator', 'attributedTo', 'author'),
     motivation: values(node, 'motivatedBy', 'motivation').map((m) => local(text(m)))[0] || null,
     body: first(node, 'bodyValue') ?? (bodyObj ? first(bodyObj, 'value', 'content', 'description', 'text') : null) ?? (typeof bodyNode === 'string' ? bodyNode : null),
-    target: targetObj ? (first(targetObj, 'hasSource', 'source') ?? idOf(targetObj)) : text(targetNode)
+    target: abs(targetObj ? (first(targetObj, 'hasSource', 'source') ?? idOf(targetObj)) : text(targetNode)),
+    // Where dokieli's stub in the inbox item names the document (as:inReplyTo).
+    inReplyTo: abs(first(node, 'inReplyTo'))
   };
 }
 
@@ -214,21 +241,24 @@ export function mountInbox(ctx, client) {
     if (d().inboxSeen[itemUrl]) return null;
     const item = await client.read(itemUrl);
     if (!item) return null; // gone, or not yet readable: the next sweep sees it
-    const activity = item.json ? parseActivity(item.json) : null;
-    const embedded = item.json ? parseAnnotation(item.json, activity?.object) : null;
-    let annotation = embedded;
+    const activity = item.json ? parseActivity(item.json, itemUrl) : null;
+    // dokieli's item carries a stub of the annotation (its motivation and the
+    // document it replies to); the annotation itself is in the store it names.
+    const embedded = item.json ? parseAnnotation(item.json, activity?.object, itemUrl) : null;
+    let annotation = null;
     let objectSha256 = null;
-    if (!annotation && activity?.object && /^https:\/\//.test(activity.object)) {
+    if (activity?.object && /^https:\/\//.test(activity.object) && !sameDocument(activity.object, itemUrl)) {
       const obj = await client.read(activity.object);
       if (obj) {
         objectSha256 = sha256(obj.bytes);
-        annotation = obj.json ? parseAnnotation(obj.json, activity.object) : null;
+        annotation = obj.json ? parseAnnotation(obj.json, activity.object, activity.object.split('#')[0]) : null;
       }
     }
+    annotation ||= embedded;
     const claimed = activity?.actor || annotation?.creator || null;
     const root = podRootOf(claimed);
     const corroborated = !!(annotation && objectSha256 && root && activity?.object?.startsWith(root) && annotation.creator === claimed);
-    const target = activity?.inReplyTo || activity?.target || annotation?.target || activity?.context || null;
+    const target = activity?.inReplyTo || activity?.target || annotation?.target || embedded?.inReplyTo || activity?.context || null;
     const f = {
       id: id('finding'), assetId: a.id, revision: a.current?.revision ?? null,
       author: claimed, attribution: corroborated ? 'corroborated' : 'claimed', via: 'inbox',

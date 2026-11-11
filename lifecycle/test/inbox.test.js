@@ -2,6 +2,7 @@
 // sends, and an inbox item driven through the service to a finding on the
 // frame that holds the asset.
 import test from 'node:test';
+import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/app.js';
 import { inboxOf, parseActivity, parseAnnotation } from '../src/inbox.js';
@@ -185,6 +186,59 @@ test('a running service watches a newly registered asset\'s inbox and records wh
     }
     assert.equal(findings.length, 1);
     assert.equal(findings[0].body, 'see note 3');
+  } finally {
+    server.close();
+  }
+});
+
+// What dokieli (the pinned commit) actually wrote on 2026-11-11, when the
+// author commented on a paragraph through its UI: the flattened Announce it
+// posted to the document's inbox, and the Web Annotation in the author's store.
+const fixture = (name) => JSON.parse(fs.readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8'));
+const DOKIELI = {
+  doc: `${CSS}author/assets/gc-review-mwc7cnhh.html`,
+  item: `${CSS}author/assets/inbox/asset-19a0cfa5-93f0-44d4-9a1d-f8993e052d73/fefe5cd4-ef33-40e1-a0da-e0de4d4cc2c2`,
+  note: `${CSS}author/annotations/fefe5cd4-ef33-40e1-a0da-e0de4d4cc2c2`
+};
+
+test('dokieli\'s real inbox item and annotation read as the author, the note and the paragraph', () => {
+  const a = parseActivity(fixture('dokieli-inbox-item.jsonld'), DOKIELI.item);
+  assert.equal(a.type, 'Announce');
+  assert.equal(a.actor, AUTHOR);
+  assert.equal(a.object, DOKIELI.note);
+  const stub = parseAnnotation(fixture('dokieli-inbox-item.jsonld'), a.object, DOKIELI.item);
+  assert.equal(stub.inReplyTo, `${DOKIELI.doc}#summary`);
+  const note = parseAnnotation(fixture('dokieli-annotation.jsonld'), DOKIELI.note, DOKIELI.note);
+  assert.equal(note.id, DOKIELI.note);
+  assert.equal(note.creator, AUTHOR);
+  assert.equal(note.motivation, 'replying');
+  assert.equal(note.body, 'The going-concern assessment omits Q4 2026.');
+  assert.equal(note.target, DOKIELI.doc);
+});
+
+test('dokieli\'s real notification becomes a corroborated finding with its text', async () => {
+  const pod = fakePod();
+  pod.put(DOKIELI.doc, 'v1');
+  const ib = inboxPod(pod);
+  const server = createApp({ tokens, podOrigin: CSS.slice(0, -1), pod: pod.client, inbox: ib.client });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = async (method, p, who, body) => {
+    const r = await fetch(`${base}${p}`, { method, headers: { authorization: `Bearer ${tokens[who]}`, 'content-type': 'application/json' }, body: body && JSON.stringify(body) });
+    return { status: r.status, body: await r.json() };
+  };
+  try {
+    const reg = await call('POST', '/assets', 'registrar', { podUrl: DOKIELI.doc, caseId: 'c3', revision: 'r1' });
+    ib.boxes.get(reg.body.inbox).set(DOKIELI.item, fixture('dokieli-inbox-item.jsonld'));
+    ib.put(DOKIELI.note, fixture('dokieli-annotation.jsonld'));
+    assert.equal((await call('POST', `/assets/${reg.body.id}/inbox/sweep`, 'engine')).body.recorded.length, 1);
+    const [f] = (await call('GET', `/assets/${reg.body.id}/annotations`, 'engine')).body;
+    assert.equal(f.author, AUTHOR);
+    assert.equal(f.attribution, 'corroborated');
+    assert.equal(f.motivation, 'replying');
+    assert.equal(f.body, 'The going-concern assessment omits Q4 2026.');
+    assert.deepEqual(f.target, { source: DOKIELI.doc, matchesAsset: true });
+    assert.equal(f.annotation, DOKIELI.note);
   } finally {
     server.close();
   }

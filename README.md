@@ -104,6 +104,11 @@ ROADMAP phase 5 (`lifecycle/src/inbox.js`).
   - **An inbox item has no authenticated sender.** CSS checks that the poster may append, not who they are, and dokieli's `actor` is the sender's own claim. So a finding's `author` is claimed, with `attribution: "claimed"`.
   - It is `"corroborated"` when the annotation lives in that author's own pod and names the same creator.
   - **Neither is ever an approval.** A reviewer's decision is a resume through the API with their Solid-OIDC token.
+- **dokieli itself** (checked through its UI, 2026-11-11):
+  - It writes a flattened `Announce` naming the annotation, and keeps the annotation in the annotator's own store. The service fetches the annotation from that store. `lifecycle/test/fixtures/` holds both, exactly as dokieli wrote them.
+  - It needs the person's profile to name their storage (`pim:storage`) before it will set up an annotation store and post. `grant-assets.js` adds it, because CSS's static seed leaves it out.
+  - **Open:** dokieli's annotation form finds a document's inbox only in the document itself (`rel="ldp:inbox"` in its body), not in the `Link` header this service writes. Until that is settled, a document must carry the link in its body for dokieli to notify.
+  - **Open:** a reviewer can't read another person's document under `assets/`, so they can't open it in dokieli. Who may read a document under review isn't decided yet.
 
 ## Run
 ```

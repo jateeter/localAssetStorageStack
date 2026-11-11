@@ -538,7 +538,15 @@ A5). The core of the integration.
     - a reviewer's dokieli-format `Announce` became a corroborated finding on the frame 0.5 s later, with no sweep call;
     - a restart's sweep recorded an item posted while the service wasn't watching;
     - on cpp, lsp and scala, an `Announce` saying "approve" left the parked continuation parked, and only the reviewer's API approval resumed it (`scripts/chain-regression.js`).
-  - **Not yet exercised:** an annotation made by hand in dokieli's own UI.
+  - **dokieli's own UI (2026-11-11), driven headless:**
+    - the author signed in through CSS, opened the document, commented on a paragraph and set up an annotation store;
+    - dokieli announced the comment to the document's inbox;
+    - it became a `corroborated` finding with its text, motivation `replying`, and the document as target, on the frame's log.
+  - **That run found three things:**
+    - dokieli writes a flattened `Announce` and keeps the annotation in the annotator's store, which the parser now handles; the fixtures in `lifecycle/test/fixtures/` are dokieli's own output;
+    - dokieli needs the profile's `pim:storage` before it sets up a store, which `grant-assets.js` now adds;
+    - **open:** dokieli's annotation form reads a document's inbox from the document body, not the `Link` header.
+  - **Open:** reviewers can't read the documents they review (403 under `assets/`).
 - **Inboxes:** each asset gets an inbox container in its pod; dokieli's
   annotations arrive there as Linked Data Notifications.
 - **Subscription:** the service subscribes through CSS 7's Solid Notifications
