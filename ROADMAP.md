@@ -611,6 +611,21 @@ the start.
   (RealityEngine_Rust#71, RealityEngine_Manager#324).
 
 **8. Agents and tools** (localOpenClawStack#91, RealityEngine_CI#714).
+- **Status (2026-11-11): per-clone agents done; frame-scoped `re-mcp` tools next.**
+  - **localOpenClawStack:** `scripts/clone-agents.mjs` loads a copy of the template machine's agent for a step's clone and unloads it.
+    - Each change is one atomic `openclaw.json` rename under a lock, with the baseline re-adopted.
+    - An unload removes the entry, the workspace and the state.
+    - The clone agent's only tool is `session_status`. OpenClaw refuses a sandboxed turn with none.
+  - **RealityEngine_Manager:** the `openclaw` driver queues loads and unloads FIFO.
+    - Its prologue reads the frame and documents with the capability; its epilogue writes `return`.
+    - The agent never holds the capability.
+  - **RealityEngine_CI:** `startUniverse.sh --assets --openclaw` selects the `openclaw` driver.
+  - **Verified:**
+    - concurrent loads and unloads (12 at once, in both config schemas) leave `openclaw.json` consistent;
+    - live on an isolated OpenClaw 2026.10.8 gateway, an agent is listed about 1 s after load and gone about 1 s after unload;
+    - a clone agent can call `session_status` and nothing else: sessions, exec, read and web_fetch are all unavailable;
+    - an IFRS frame ran prepare → review → approve → arbiter → closed with a clone agent per step, and nothing was left loaded.
+  - **Next:** `re-mcp` tools scoped to the frame by assetID (RealityEngine_CI#714). Their capability binding needs a design decision, because OpenClaw's MCP servers are gateway-wide.
 - **Per-clone agents:** loaded at clone and unloaded at recycle, as atomic
   `openclaw.json` edits through the FIFO queue. Each unload removes the agent's
   entry, workspace and state.
