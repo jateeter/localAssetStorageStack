@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/app.js';
+import { tlsFixture } from './support/tls.js';
 import { eventLog } from '../src/integrity.js';
 import { workflowMetrics } from '../src/metrics.js';
 
@@ -50,16 +51,17 @@ test('gauges come from the frames, counters from the log, and the counters survi
 test('GET /metrics needs no sign-in, and every committed event reaches eventOut', async () => {
   const lines = [];
   const tokens = { admin: 'adm-token-0123456789-0123456789-01', registrar: 'reg-token-0123456789-0123456789-01', engine: 'eng-token-0123456789-0123456789-01' };
-  const server = createApp({ tokens, eventOut: (l) => lines.push(l) });
+  const fx = tlsFixture();
+  const server = createApp({ tokens, eventOut: (l) => lines.push(l), tls: fx.tls });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  const base = `http://127.0.0.1:${server.address().port}`;
+  const base = `https://127.0.0.1:${server.address().port}`;
   try {
-    const put = await fetch(`${base}/roles`, { method: 'PUT', headers: { authorization: `Bearer ${tokens.admin}`, 'content-type': 'application/json' },
+    const put = await fx.request(`${base}/roles`, { method: 'PUT', headers: { authorization: `Bearer ${tokens.admin}`, 'content-type': 'application/json' },
       body: JSON.stringify({ webId: 'https://assets-css.localhost:13443/x/profile/card#me', roles: ['reviewer'] }) });
     assert.equal(put.status, 200);
     assert.deepEqual(lines.map((l) => l.type), ['roles.set']);
     assert.ok(lines[0].hash && lines[0].seq === 1, 'the line as the log holds it');
-    const r = await fetch(`${base}/metrics`);
+    const r = await fx.request(`${base}/metrics`);
     assert.equal(r.status, 200);
     assert.match(r.headers.get('content-type'), /^text\/plain/);
     assert.equal(value(await r.text(), 'lifecycle_events_total', '{type="roles.set"}'), 1);

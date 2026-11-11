@@ -5,6 +5,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import { createApp } from '../src/app.js';
+import { tlsFixture } from './support/tls.js';
 import { inboxOf, parseActivity, parseAnnotation } from '../src/inbox.js';
 import { fakePod } from './support/pod.js';
 
@@ -88,11 +89,12 @@ test('an annotation announced to the asset\'s inbox becomes a finding on its fra
   const doc = `${CSS}author/assets/report.html`;
   pod.put(doc, 'same bytes, new ETag');
   const ib = inboxPod(pod);
-  const server = createApp({ tokens, podOrigin: CSS.slice(0, -1), pod: pod.client, inbox: ib.client });
+  const fx = tlsFixture();
+  const server = createApp({ tokens, podOrigin: CSS.slice(0, -1), pod: pod.client, inbox: ib.client, tls: fx.tls });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  const base = `http://127.0.0.1:${server.address().port}`;
+  const base = `https://127.0.0.1:${server.address().port}`;
   const call = async (method, p, who, body) => {
-    const r = await fetch(`${base}${p}`, { method, headers: { authorization: `Bearer ${tokens[who]}`, 'content-type': 'application/json' }, body: body && JSON.stringify(body) });
+    const r = await fx.request(`${base}${p}`, { method, headers: { authorization: `Bearer ${tokens[who]}`, 'content-type': 'application/json' }, body: body && JSON.stringify(body) });
     return { status: r.status, body: await r.json() };
   };
   try {
@@ -163,12 +165,13 @@ test('a running service watches a newly registered asset\'s inbox and records wh
   const ib = inboxPod(pod);
   const channels = new Map();
   ib.client.subscribe = async (topic, { onMessage }) => { channels.set(topic, onMessage); return { close() {} }; };
-  const server = createApp({ tokens, podOrigin: CSS.slice(0, -1), pod: pod.client, inbox: ib.client });
+  const fx = tlsFixture();
+  const server = createApp({ tokens, podOrigin: CSS.slice(0, -1), pod: pod.client, inbox: ib.client, tls: fx.tls });
   server.inboxes.start();
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  const base = `http://127.0.0.1:${server.address().port}`;
+  const base = `https://127.0.0.1:${server.address().port}`;
   const call = async (method, p, who, body) => {
-    const r = await fetch(`${base}${p}`, { method, headers: { authorization: `Bearer ${tokens[who]}`, 'content-type': 'application/json' }, body: body && JSON.stringify(body) });
+    const r = await fx.request(`${base}${p}`, { method, headers: { authorization: `Bearer ${tokens[who]}`, 'content-type': 'application/json' }, body: body && JSON.stringify(body) });
     return { status: r.status, body: await r.json() };
   };
   try {
@@ -220,11 +223,12 @@ test('dokieli\'s real notification becomes a corroborated finding with its text'
   const pod = fakePod();
   pod.put(DOKIELI.doc, 'v1');
   const ib = inboxPod(pod);
-  const server = createApp({ tokens, podOrigin: CSS.slice(0, -1), pod: pod.client, inbox: ib.client });
+  const fx = tlsFixture();
+  const server = createApp({ tokens, podOrigin: CSS.slice(0, -1), pod: pod.client, inbox: ib.client, tls: fx.tls });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  const base = `http://127.0.0.1:${server.address().port}`;
+  const base = `https://127.0.0.1:${server.address().port}`;
   const call = async (method, p, who, body) => {
-    const r = await fetch(`${base}${p}`, { method, headers: { authorization: `Bearer ${tokens[who]}`, 'content-type': 'application/json' }, body: body && JSON.stringify(body) });
+    const r = await fx.request(`${base}${p}`, { method, headers: { authorization: `Bearer ${tokens[who]}`, 'content-type': 'application/json' }, body: body && JSON.stringify(body) });
     return { status: r.status, body: await r.json() };
   };
   try {
