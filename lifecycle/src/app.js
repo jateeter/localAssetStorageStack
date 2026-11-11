@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import { Raw, mountFrames } from './frames.js';
 import { mountLanes } from './lanes.js';
 import { workflowMetrics } from './metrics.js';
+import { mountInbox } from './inbox.js';
 import { IntegrityError, eventLog, receiptSigner, verifyReceipt } from './integrity.js';
 import { AuthError, capabilityIssuer, isCapability, roleList, serviceTokens, solidOidcVerifier } from './identity.js';
 
@@ -68,7 +69,11 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
   link = { configured: false },
   // Where each committed event line goes besides the log, for Loki (phase 10);
   // server.js writes it to stdout.
-  eventOut = null }) {
+  eventOut = null,
+  // The pods' side of the asset inboxes (inbox.inboxClient, ROADMAP phase 5):
+  // dokieli's annotation notifications become findings. Unset, assets get no
+  // inbox.
+  inbox = null }) {
   engineCheck ||= link.configured ? (e, t) => link.carries(e, t) : async () => 'unchecked';
   const d = () => store.d;
   const receipt = (type, body) => {
@@ -90,6 +95,10 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
     if (eventOut) eventOut(line);
     if (touched && event.frameId) touched.add(event.frameId);
   };
+  // Changes run one at a time (see the handler).
+  let queue = Promise.resolve();
+  const serial = (fn) => { const next = queue.then(fn, fn); queue = next.catch(() => {}); return next; };
+  const inboxes = inbox ? mountInbox({ d, commit: (e) => commit(e), serial, now, id, sha256 }, inbox) : null;
   const readPod = async (url) => {
     need(pod, 503, 'the service cannot read pods (no service identity)');
     return pod.read(url);
@@ -133,6 +142,8 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
     need(typeof revision === 'string' && revision, 400, 'revision required');
     need(content === undefined, 400, 'content is read from the pod, never sent');
     need(hash === undefined || /^[0-9a-f]{64}$/.test(hash), 400, 'hash must be a SHA-256 hex digest');
+    // The inbox link first: writing it changes the ETag, which this pin then holds.
+    if (inboxes) await inboxes.link(a);
     const read = await readPod(a.podUrl);
     need(hash === undefined || hash === read.hash, 409, 'hash does not match the pod');
     return { revision, hash: read.hash, etag: read.etag, pinnedAt: now() };
@@ -194,6 +205,15 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
     return [201, f];
   });
   route('GET', '/assets/:id/annotations', ({ params }) => [200, Object.values(d().findings).filter((f) => f.assetId === params.id)]);
+  // Record what the asset's inbox holds now, without waiting for its
+  // notification channel (ROADMAP phase 5).
+  route('POST', '/assets/:id/inbox/sweep', async ({ params, principal }) => {
+    allow(principal, 'registrar', 'engine');
+    const a = asset(params.id);
+    need(inboxes && a.inbox, 409, 'the asset has no inbox');
+    const made = await inboxes.sweepNow(a.id);
+    return [200, { inbox: a.inbox, recorded: made.map((f) => f.id) }];
+  });
   route('POST', '/assets/:id/dispositions', ({ params, body, principal }) => {
     allow(principal, 'reviewer');
     const a = asset(params.id);
@@ -213,6 +233,7 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
   const lanes = mountLanes({ route, need, allow, d, commit: (e) => commit(e), receipt, actor, now, link });
   onRepin = mountFrames({
     route, need, allow, d, commit: (e) => commit(e), receipt, asset, readPod, actor, engineCheck, now, id, sha256, log, capabilities, lanes,
+    beforePin: (a) => (inboxes ? inboxes.link(a) : undefined),
     pod: { create: (...a) => { need(pod, 503, 'the service cannot write pods (no service identity)'); return pod.create(...a); },
            write: (...a) => { need(pod, 503, 'the service cannot write pods (no service identity)'); return pod.write(...a); } },
     applyPin: (a, pinned, opts) => { applyPin(a, pinned); onRepin(a.id, 'frame-step', opts); }
@@ -241,8 +262,6 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
     return [200, { valid: verifyReceipt(r, receipts.jwks) }];
   });
 
-  let queue = Promise.resolve();
-  const serial = (fn) => { const next = queue.then(fn, fn); queue = next.catch(() => {}); return next; };
 
   const handler = (req, res) => {
     const send = (s, o) => { const b = JSON.stringify(o); res.writeHead(s, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(b) }); res.end(b); };
@@ -308,5 +327,9 @@ export function createApp({ tokens, store = new Store(), podOrigin = '', registr
   };
   // `tls` ({ key, cert }) serves HTTPS under the profile; without it the app is a
   // plain in-process handler, which only the unit tests use.
-  return tls ? https.createServer(tlsServerOptions(tls), handler) : http.createServer(handler);
+  const server = tls ? https.createServer(tlsServerOptions(tls), handler) : http.createServer(handler);
+  // server.js starts the inbox watchers once the service identity is ready.
+  server.inboxes = inboxes;
+  server.on('close', () => inboxes?.stop());
+  return server;
 }

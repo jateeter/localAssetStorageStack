@@ -372,6 +372,8 @@ export function mountFrames(ctx) {
     // The frame's own write: re-pin it here, so the frame does not read its own
     // step as a stale document. Other frames that reference the asset do.
     const a = asset(doc.assetId);
+    // The write replaced the document, and with it the inbox link (inbox.js).
+    await ctx.beforePin?.(a);
     const read = await readPod(doc.uri);
     const pinned = { revision: `${doc.revision}+${f.current}`, hash: read.hash, etag: read.etag, pinnedAt: now() };
     applyPin(a, pinned, { except: f.frameId });

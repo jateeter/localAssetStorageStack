@@ -224,6 +224,7 @@ never code.
 - At most one binding can be open per machine; a second is `409 binding open`.
 
 **10. Nothing connects dokieli to the lifecycle service.**
+- **Answered by phase 5 (2026-11-10).** One point differs from the text below: CSS authenticates the poster's right to append, not their identity. So a finding's author is the sender's claim, corroborated when the annotation lives in that author's pod. It is never an approval.
 - Each asset gets an inbox container in its pod. dokieli already sends
   annotations there as Linked Data Notifications.
 - The lifecycle service subscribes to that inbox through CSS 7's Solid
@@ -527,6 +528,17 @@ A5). The core of the integration.
   - a head closed on termination.
 
 **5. dokieli → lifecycle** (A7). Turns on dokieli ↔ lifecycle.
+- **Status (2026-11-10):** done in `lifecycle/src/inbox.js`; README, "dokieli → the lifecycle".
+  - **Inbox:** each asset has `<pod>/assets/inbox/<assetId>/`, linked from the document's `.meta`.
+    - CSS drops that link on a PUT, and writing it moves the ETag, so it is written just before every pin.
+  - **Watching:** WebSocketChannel2023, with a sweep on every subscribe.
+  - **Access:** others may Append to the inbox, not Read it.
+  - **Findings:** `attribution` `claimed`, or `corroborated` when the annotation lives in the claimed author's own pod. A finding never approves.
+  - **Verified live:**
+    - a reviewer's dokieli-format `Announce` became a corroborated finding on the frame 0.5 s later, with no sweep call;
+    - a restart's sweep recorded an item posted while the service wasn't watching;
+    - on cpp, lsp and scala, an `Announce` saying "approve" left the parked continuation parked, and only the reviewer's API approval resumed it (`scripts/chain-regression.js`).
+  - **Not yet exercised:** an annotation made by hand in dokieli's own UI.
 - **Inboxes:** each asset gets an inbox container in its pod; dokieli's
   annotations arrive there as Linked Data Notifications.
 - **Subscription:** the service subscribes through CSS 7's Solid Notifications
