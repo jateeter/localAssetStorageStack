@@ -17,7 +17,7 @@
 #
 # The Node base follows the suite's minor (RealityEngine_CI .nvmrc,
 # advanced by scripts/advance-node.sh).
-FROM node:26.12-alpine AS build
+FROM node:26.13-alpine AS build
 ARG DOKIELI_COMMIT=e1de48743ace45cdbf4cc23caa902710d4a739bc
 ARG COREPACK_VERSION=0.36.0
 RUN apk add --no-cache git
