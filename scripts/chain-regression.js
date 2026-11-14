@@ -40,16 +40,28 @@ if (engines.some((e) => !e)) {
 const people = Object.keys(cfg.accounts).filter((p) => p !== 'lifecycle');
 const roles = (await lc('GET', '/roles', 'admin')).body;
 const pick = (role) => people.find((p) => (roles[`https://assets-css.localhost:13443/${p}/profile/card#me`] || []).includes(role));
-const author = await person(cfg, pick('author'));
-const reviewer = await person(cfg, pick('reviewer'));
+// assets-css issues a client-credentials token for 600 s, and one engine's
+// pass takes minutes (each step is an agent turn), so the people sign in again
+// at the start of every engine's pass. Signed in once, the author's token had
+// expired before scala-1's turn (run 20261114T053721Z, 14.5 min): its pod write
+// failed unseen and the frame was refused as "asset not found".
+let author;
+let reviewer;
+const signIn = async () => {
+  author = await person(cfg, pick('author'));
+  reviewer = await person(cfg, pick('reviewer'));
+};
 
 const frame = async (fid) => (await lc('GET', `/frames/${fid}`, 'engine')).body;
 const last = (f) => f.continuations[f.continuations.length - 1];
 const clonesOf = async (e, fid) => ((await request('GET', `${e.re_url}/api/engine/clones`, { tls })).body.clones || []).filter((c) => !fid || c.assetId === fid);
 async function newAsset(name) {
   const doc = `${author.webId.replace('profile/card#me', '')}assets/${name}-${run}.html`;
-  await author.pod(doc, { method: 'PUT', headers: { 'content-type': 'text/html' }, body: `<p>${name}</p>` });
-  return { doc, asset: (await lc('POST', '/assets', 'registrar', { podUrl: doc, caseId: `chain-${run}`, revision: 'r1' })).body };
+  const put = await author.pod(doc, { method: 'PUT', headers: { 'content-type': 'text/html' }, body: `<p>${name}</p>` });
+  if (!put.ok) throw new Error(`${name}: the author's pod write was refused ${put.status}`);
+  const reg = await lc('POST', '/assets', 'registrar', { podUrl: doc, caseId: `chain-${run}`, revision: 'r1' });
+  if (reg.status !== 201 || !reg.body?.id) throw new Error(`${name}: the lifecycle did not register the asset ${reg.status} ${JSON.stringify(reg.body)}`);
+  return { doc, asset: reg.body };
 }
 const assetOf = {};
 async function build(e, { preparer, upstreamRefs = [], entity }) {
@@ -67,6 +79,7 @@ const types = async (fid) => (await lc('GET', `/frames/${fid}/history`, 'engine'
 
 const outcomes = {};
 for (const e of engines) {
+  await signIn();
   const o = {};
   // The chain.
   const a = await build(e, { preparer: author, entity: 'A' });
