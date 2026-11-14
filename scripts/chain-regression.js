@@ -84,6 +84,22 @@ const resume = (fid, k, who, body) => lc('POST', `/frames/${fid}/continuations/$
 const types = async (fid) => (await lc('GET', `/frames/${fid}/history`, 'engine')).body.map((x) => x.type);
 
 const outcomes = {};
+// A frame this run built and left open would be resumed into the next universe:
+// the lifecycle store outlives it, and Manager clones the open step onto the
+// engine it names. On run 20261114T223955Z one such frame, from an earlier run
+// that failed, cloned onto cpp-1 alone in a fresh universe and diverged its
+// trajectory and engine-process stages. So, however the run ends, every frame it
+// built that is still open is abandoned.
+async function abandonOpen() {
+  for (const fid of Object.keys(assetOf)) {
+    try {
+      if ((await frame(fid)).status === 'open') {
+        await lc('POST', `/frames/${fid}/abandon`, 'registrar', { reason: 'regression: the chain run ended before this frame closed' });
+      }
+    } catch { /* best effort: report the run's own failure, not the cleanup's */ }
+  }
+}
+try {
 for (const e of engines) {
   await signIn();
   const o = {};
@@ -151,6 +167,9 @@ for (const e of engines) {
   t.check(`${e.id}: the arbiter step ran and terminated; the head is closed`, o.closed.head === 'CLOSED' && o.closed.lastReturnTemplate === T2 && o.blocksAfterClose === 0);
   t.check(`${e.id}: a stale upstream took the escape path`, o.staleUpstream.k1 === 'superseded' && o.staleUpstream.reasonIsUpstream && o.staleUpstream.escapeTo === T1, JSON.stringify(o.staleUpstream));
   t.check(`${e.id}: maxActive + 1 shows the pool limit; the pool is as it was after`, JSON.stringify(o.pool.statuses) === '[201,201,409]' && /maxActive/.test(o.pool.refusal || '') && o.pool.asBefore, JSON.stringify(o.pool));
+}
+} finally {
+  await abandonOpen();
 }
 const forms = Object.values(outcomes).map((o) => JSON.stringify(o));
 t.check('3-of-3: the voting engines agree on every outcome', new Set(forms).size === 1,
