@@ -73,6 +73,12 @@ async function build(e, { preparer, upstreamRefs = [], entity }) {
   assetOf[r.body.frameId] = { doc, asset };
   return r.body.frameId;
 }
+// A step that parks or terminates is an agent turn (about 90 s each), and
+// Manager runs them one at a time, FIFO, through the gateway: an engine's step
+// can wait behind the previous engine's remaining ones. 120 s was not enough on
+// run 20261114T152700Z (scala-1's clone loaded 86 s into the wait, its turn
+// still running when it expired). ASSET_CHAIN_STEP_TIMEOUT_S overrides it.
+const STEP_S = Number(process.env.ASSET_CHAIN_STEP_TIMEOUT_S || 600);
 const parkedK = (k) => async (fid) => { const f = await frame(fid); const c = last(f); return c.status === 'parked' && c.continuationId === k ? f : null; };
 const resume = (fid, k, who, body) => lc('POST', `/frames/${fid}/continuations/${k}/resume`, who, body);
 const types = async (fid) => (await lc('GET', `/frames/${fid}/history`, 'engine')).body.map((x) => x.type);
@@ -83,7 +89,7 @@ for (const e of engines) {
   const o = {};
   // The chain.
   const a = await build(e, { preparer: author, entity: 'A' });
-  const parked = await until(`${e.id}: prepare parks`, () => parkedK('k1')(a));
+  const parked = await until(`${e.id}: prepare parks`, () => parkedK('k1')(a), STEP_S);
   o.parked = { next: last(parked).next.templateId, head: parked.headStatus, role: last(parked).resumableBy.role };
   o.blocksWhileParked = (await clonesOf(e, a)).length;
   // An annotation on the document under review, announced to its inbox as
@@ -98,7 +104,7 @@ for (const e of engines) {
   o.inbox = { posted: sent.status, finding: noted, stillParked: still.status === 'parked' && still.continuationId === 'k1' };
   // Approver ≠ preparer.
   const b = await build(e, { preparer: reviewer, entity: 'B' });
-  await until(`${e.id}: B parks`, () => parkedK('k1')(b));
+  await until(`${e.id}: B parks`, () => parkedK('k1')(b), STEP_S);
   const self = await resume(b, 'k1', reviewer, { generation: 2, decision: 'approve' });
   o.approveByPreparer = { status: self.status, error: self.body?.error };
   await lc('POST', `/frames/${b}/abandon`, reviewer, { reason: 'regression: approver-is-preparer case done' });
@@ -107,19 +113,19 @@ for (const e of engines) {
   const replay = await resume(a, 'k1', reviewer, { generation: 2, decision: 'approve' });
   o.approve = { status: ok.status, outcome: ok.body?.outcome };
   o.replay = { status: replay.status, error: replay.body?.error };
-  const closed = await until(`${e.id}: the approved step terminates`, async () => { const f = await frame(a); return f.status === 'closed' ? f : null; });
+  const closed = await until(`${e.id}: the approved step terminates`, async () => { const f = await frame(a); return f.status === 'closed' ? f : null; }, STEP_S);
   o.closed = { head: closed.headStatus, lastReturnTemplate: closed.return?.template, history: (await types(a)).filter((x) => x !== 'pod.read') };
   o.blocksAfterClose = (await clonesOf(e, a)).length;
   // A stale upstream takes the escape path.
   const { doc: upDoc, asset: up } = await newAsset(`upstream-${e.id}`);
   const c = await build(e, { preparer: author, upstreamRefs: [up.id], entity: 'C' });
-  await until(`${e.id}: C parks`, () => parkedK('k1')(c));
+  await until(`${e.id}: C parks`, () => parkedK('k1')(c), STEP_S);
   await author.pod(upDoc, { method: 'PUT', headers: { 'content-type': 'text/html' }, body: '<p>upstream, revised</p>' });
   await lc('POST', `/assets/${up.id}/revisions`, 'registrar', { revision: 'r2' });
   const stale = await frame(c);
   const escaped = stale.continuations.find((k) => k.continuationId === 'k1');
   o.staleUpstream = { k1: escaped.status, reasonIsUpstream: /^upstream .* re-pinned at r2$/.test(escaped.supersededReason || ''), escapeTo: stale.continuations[2]?.next.templateId };
-  await until(`${e.id}: C re-entered and parked again`, () => parkedK('k3')(c));
+  await until(`${e.id}: C re-entered and parked again`, () => parkedK('k3')(c), STEP_S);
   await lc('POST', `/frames/${c}/abandon`, 'registrar', { reason: 'regression: stale-upstream case done' });
   // The pool limit, through Manager's routes, and the pool as it was after.
   const cfgUrl = `${e.re_url}/api/engine/config/clone.maxActive`;
