@@ -18,7 +18,7 @@ Every link is **TLS 1.3** (RealityEngine_CI#668, ROADMAP phase 1): certificates 
 - the lifecycle service's own WebID;
 - the people in `ASSETS_PEOPLE`.
 
-Secrets live in `.secrets/` (gitignored, 0600), never under `runtime/`, which the lifecycle service mounts. The lifecycle API takes:
+Secrets live in the secrets home, `$RE_SECRETS_DIR/localAssetStorageStack/` (default `~/.reality-engine/secrets/localAssetStorageStack/`; `scripts/lib/secrets-home.js`): one place per machine, outside every repository and never under `runtime/`, which the lifecycle service mounts. Every checkout shares it, as every checkout shares the pod store volume (one compose project), and RealityEngine_CI's regression harness exports `RE_SECRETS_DIR` so its worktrees agree (owner, 2026-11-14). It holds the accounts and the lifecycle's service tokens (`service.env`). `up.js` copies a checkout's old `.secrets/` and `.env` tokens there once, verified, and never deletes them. The lifecycle API takes:
 - people from Solid-OIDC DPoP tokens issued by `assets-css`, with roles from `runtime/roles.json`;
 - services by tokens of at least 32 bytes;
 - agents by EdDSA capability tokens, one per frame step.

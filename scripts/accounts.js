@@ -4,9 +4,9 @@
 // - the people named by ASSETS_PEOPLE (`name:role[+role],...`; default
 //   `author:author,reviewer:reviewer`), each with a pod and a WebID.
 //
-// Passwords are generated once and kept in .secrets/accounts.json (0600). From
-// it come the CSS seed (.secrets/css-seed.json), the service's account
-// (.secrets/lifecycle-account.json) and the role list (runtime/roles.json,
+// Passwords are generated once and kept in accounts.json in the secrets home
+// (scripts/lib/secrets-home.js), 0600. From it come the CSS seed (css-seed.json),
+// the service's account (lifecycle-account.json) and the role list (runtime/roles.json,
 // not secret: WebIDs and roles only). Provisioning is idempotent: a rerun keeps
 // every existing password, and adds the people ASSETS_PEOPLE adds.
 import crypto from 'node:crypto';

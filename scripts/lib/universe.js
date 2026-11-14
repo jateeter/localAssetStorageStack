@@ -13,13 +13,15 @@ import https from 'node:https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dpopKey, dpopProof } from '../../lifecycle/src/jose.js';
+import { readAccounts, secretsHome, serviceTokens } from './secrets-home.js';
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const CSS = 'https://assets-css.localhost:13443/';
 
 export function config() {
-  const env = Object.fromEntries(fs.readFileSync(path.join(root, '.env'), 'utf8').split('\n')
-    .filter((l) => /^[A-Z_]+=/.test(l)).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+  // The secrets home every checkout shares (scripts/lib/secrets-home.js).
+  const home = secretsHome();
+  const env = serviceTokens(home);
   const registry = JSON.parse(fs.readFileSync(path.join(root, 'runtime', 'registry.json'), 'utf8'));
   const read = (v) => (process.env[v] ? fs.readFileSync(process.env[v]) : undefined);
   return {
@@ -27,7 +29,7 @@ export function config() {
     lifecycleUrl: process.env.LIFECYCLE_URL || registry.services.lifecycle.externalUrl,
     managerUrl: process.env.MANAGER_URL || '',
     registryUrl: process.env.RE_REGISTRY_URL || '',
-    accounts: JSON.parse(fs.readFileSync(path.join(root, '.secrets', 'accounts.json'), 'utf8')),
+    accounts: readAccounts(home),
     harness: { ca: read('RE_HARNESS_TLS_CA'), cert: read('RE_HARNESS_TLS_CERT'), key: read('RE_HARNESS_TLS_KEY') }
   };
 }

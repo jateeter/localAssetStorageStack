@@ -10,8 +10,11 @@
 #
 # Identity (ROADMAP phase 2): assets-css registration is closed. up.js writes
 # the seed of accounts and pods that CSS reads at start and the lifecycle
-# service's own account, both in .secrets/ (gitignored, 0600, and outside
-# runtime/, which the lifecycle mounts), and the role list (runtime/roles.json)
+# service's own account, both in the secrets home (scripts/lib/secrets-home.js:
+# $RE_SECRETS_DIR/localAssetStorageStack/, default ~/.reality-engine/secrets/...,
+# one per machine and shared by every checkout as the pod store volume is; 0600,
+# outside every repository and outside runtime/, which the lifecycle mounts),
+# and the role list (runtime/roles.json)
 # that attaches person roles to WebIDs.
 #
 # Every link is TLS 1.3 (RealityEngine_CI#668, ROADMAP D2). The two user-facing
@@ -94,9 +97,12 @@ services:
     build: ./lifecycle
     read_only: true
     environment:
-      ADMIN_TOKEN: ${ADMIN_TOKEN:?set in .env}
-      REGISTRAR_TOKEN: ${REGISTRAR_TOKEN:?set in .env}
-      ENGINE_TOKEN: ${ENGINE_TOKEN:?set in .env}
+      # From the secrets home (scripts/up.js, scripts/lib/secrets-home.js). Empty
+      # here only for a command that creates nothing (down, ps); the lifecycle
+      # refuses to start without them.
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      REGISTRAR_TOKEN: ${REGISTRAR_TOKEN:-}
+      ENGINE_TOKEN: ${ENGINE_TOKEN:-}
       CSS_ORIGIN: https://assets-css.localhost:13443
       REGISTRY_FILE: /registry/registry.json
       ROLES_FILE: /registry/roles.json
@@ -126,9 +132,9 @@ services:
 
 secrets:
   css-seed:
-    file: ./.secrets/css-seed.json
+    file: ${ASSETS_SECRETS_DIR:-${HOME}/.reality-engine/secrets/localAssetStorageStack}/css-seed.json
   lifecycle-account:
-    file: ./.secrets/lifecycle-account.json
+    file: ${ASSETS_SECRETS_DIR:-${HOME}/.reality-engine/secrets/localAssetStorageStack}/lifecycle-account.json
 
 volumes:
   css-data:
