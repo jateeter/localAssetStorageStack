@@ -2,7 +2,7 @@
 // (ROADMAP phase 3): the service pins what the pod holds, so it must be able to
 // read it, and publish writes it back.
 //
-// For every person in .secrets/accounts.json: sign in as them, make sure
+// For every person in the secrets home's accounts.json: sign in as them, make sure
 // `<pod>/assets/` exists, and set that container's ACL to
 // - the owner: Read, Write, Control (as on the rest of their pod);
 // - the lifecycle service's WebID: Read, Write, Control — Control so it can
@@ -35,10 +35,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { serviceIdentity } from '../lifecycle/src/identity.js';
 import { CSS_BASE, SERVICE, webIdOf } from './accounts.js';
+import { readAccounts, secretsHome } from './lib/secrets-home.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const secretsDir = path.join(root, '.secrets');
-const accounts = JSON.parse(fs.readFileSync(path.join(secretsDir, 'accounts.json'), 'utf8'));
+const secretsDir = secretsHome();
+const accounts = readAccounts(secretsDir);
 const lifecycle = webIdOf(SERVICE);
 
 const assetsAcl = (owner, service) => `@prefix acl: <http://www.w3.org/ns/auth/acl#>.

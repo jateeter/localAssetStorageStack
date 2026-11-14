@@ -19,6 +19,7 @@ import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { provisionAccounts } from './accounts.js';
+import { migrateFromCheckout, secretsHome, serviceTokens } from './lib/secrets-home.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FIXED = { 'assets-css': 13443, 'assets-dokieli': 13444 };
@@ -82,15 +83,24 @@ const allocatePort = () => new Promise((resolve, reject) => {
 });
 
 // --- 3. accounts ----------------------------------------------------------------
+// The secrets live in the machine's one secrets home, shared by every checkout
+// as the pod store volume is (scripts/lib/secrets-home.js). A checkout's old
+// .secrets/ and .env tokens are copied there once, verified, and left in place.
+const secretsDir = secretsHome();
+try {
+  const migrated = migrateFromCheckout(root, secretsDir);
+  if (migrated.length) console.log(`up.js: copied to ${secretsDir}: ${migrated.join(', ')} (the originals are kept)`);
+} catch (e) { fail(e.message); }
+composeEnv.ASSETS_SECRETS_DIR = secretsDir;
+try { Object.assign(composeEnv, serviceTokens(secretsDir)); } catch (e) { fail(e.message); }
 // A pod store that outlived its passwords can't be signed in to: refuse rather
 // than seed accounts CSS will reject as existing.
-const secretsDir = path.join(root, '.secrets');
 const project = JSON.parse(compose(['config', '--format', 'json'])).name;
 const cssVolume = execFileSync('docker', ['volume', 'ls', '-q', '--filter', `label=com.docker.compose.project=${project}`,
   '--filter', 'label=com.docker.compose.volume=css-data'], { encoding: 'utf8' }).trim();
 if (cssVolume && !fs.existsSync(path.join(secretsDir, 'accounts.json'))) {
-  fail(`the pod store (volume ${cssVolume}) exists but .secrets/accounts.json does not, so its accounts can't be signed in to. `
-    + 'Restore .secrets/, or remove the stack with `docker compose down -v` to start over.');
+  fail(`the pod store (volume ${cssVolume}) exists but ${secretsDir}/accounts.json does not, so its accounts can't be signed in to. `
+    + `Restore it there, or remove the stack with \`docker compose down -v\` to start over.`);
 }
 // ASSETS_PEOPLE from the environment, else from .env, which compose reads for
 // itself but this script does not.

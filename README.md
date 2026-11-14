@@ -18,7 +18,7 @@ Registration on `assets-css` is **closed** (ROADMAP phase 2): nobody can create 
 - **`lifecycle`**: the lifecycle service's own WebID. At start the service signs in with its seeded password, creates DPoP client credentials once, keeps them on its data volume (0600) and reports them on `/health` (`identity.status: ready`).
 - **People**, from `ASSETS_PEOPLE` (`name:role[+role],...`, default `author:author,reviewer:reviewer`). Each gets a pod and a WebID, `https://assets-css.localhost:13443/<name>/profile/card#me`, and the roles listed. The roles are written to `runtime/roles.json`, which the lifecycle service reads at start.
 
-Passwords are generated once, into `.secrets/accounts.json` (gitignored, 0600). A rerun keeps them and seeds anyone newly added to `ASSETS_PEOPLE`. Removing someone from it takes away their roles but keeps their pod. If the pod store outlives `.secrets/`, `up.js` refuses to start: restore `.secrets/`, or start over with `docker compose down -v`.
+Passwords are generated once, into `accounts.json` in the secrets home, `$RE_SECRETS_DIR/localAssetStorageStack/` (default `~/.reality-engine/secrets/localAssetStorageStack/`; `scripts/lib/secrets-home.js`), 0600 and outside every repository. A rerun keeps them and seeds anyone newly added to `ASSETS_PEOPLE`. Removing someone from it takes away their roles but keeps their pod. If the pod store outlives that `accounts.json`, `up.js` refuses to start: restore it`, or start over with `docker compose down -v`.
 
 People sign in to dokieli with **Solid-OIDC** against `assets-css`: in dokieli, Sign in → Sign in with Solid → `https://assets-css.localhost:13443/`. After that, dokieli reads and writes their pod directly. CSS answers CORS only for the dokieli origin.
 
