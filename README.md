@@ -155,6 +155,7 @@ Routes:
 - `POST /frames/:id/continuations` (engine) – capture or park the next continuation
 - `POST /frames/:id/continuations/:k/resume` – `{ generation, decision? }`: `resume` with `next` (and an agent capability for an engine resume), or `escape`
 - `POST /frames/:id/continuations/:k/supersede` (engine), `POST /frames/:id/abandon` (the case's abandon capability), `POST /frames/:id/close` (engine; termination)
+- `POST /frames/:id/continuations/:k/fail` (engine; `{reason, attempts}`): the running step's agent failed after the engine side's retries. The continuation becomes `failed` and the frame parks a re-run of the same step for its **author** (`resumableBy: {role: author, excludeIdentity: null}`), with the reason, under a signed `step-failed` receipt and a `step.failed` event. The author approves to re-run it or sends it back with rework; the frame is never left open and silent, and never loops on its own (RealityEngine_Manager#346).
 - `GET|PUT /pod?url=` – an agent's only way to its frame's documents
 - `POST /frames/:id/clones` (engine) – allocate the frame's lanes in the clone's reserved cells; `DELETE /frames/:id/clones/:cloneId?generation=` – free them; `GET /lanes`
 - `GET /assets/:id/history` – the asset's events from the append-only log

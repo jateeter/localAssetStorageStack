@@ -309,6 +309,32 @@ export function mountFrames(ctx) {
     return [200, { capability: capabilities.issue({ frameId: f.frameId, continuationId: c.continuationId, scopes: c.scopes }), scopes: c.scopes }];
   });
 
+  // A step that could not run to its epilogue (RealityEngine_Manager#346): its
+  // agent failed, after the engine side's own retries. The engine side reports
+  // it on the running step, with the reason, and the frame parks for its author:
+  // never left open and silent (the principle of rules 4 and 7), and never an
+  // automatic loop (the escape re-enters at k0, which the engine resumes on its
+  // own). The author re-runs the step (approve) or sends it back (rework); the
+  // case's abandon capability can still abandon the frame.
+  route('POST', '/frames/:id/continuations/:kid/fail', ({ params, body, principal }) => {
+    allow(principal, 'engine');
+    const f = frame(params.id);
+    open(f);
+    const c = cont(f, params.kid);
+    need(f.current === c.continuationId && c.status === 'resumed', 409, `continuation is ${c.status}, not the running step`);
+    need(typeof body.reason === 'string' && body.reason, 400, 'reason required');
+    const attempts = Number.isInteger(body.attempts) && body.attempts > 0 ? body.attempts : 1;
+    const by = actor(principal);
+    c.status = 'failed';
+    c.failedAt = now();
+    c.failedReason = body.reason;
+    const k = record(f, { next: c.next, resumableBy: { role: 'author', excludeIdentity: null }, scopes: c.scopes, onStale: c.onStale },
+      maxGeneration(f) + 1, 'parked', { failedFrom: c.continuationId, reason: body.reason });
+    const r = receipt('step-failed', { frameId: f.frameId, failed: c.continuationId, generation: c.generation, attempts, continuationId: k.continuationId, reason: body.reason, by });
+    commit({ type: 'step.failed', assetId: f.frameId, frameId: f.frameId, failed: c.continuationId, continuationId: k.continuationId, attempts, reason: body.reason, by, receiptId: r.id });
+    return [201, { outcome: 'failed', failed: c.continuationId, continuation: k, receipt: r.id }];
+  });
+
   route('POST', '/frames/:id/continuations/:kid/supersede', ({ params, body, principal }) => {
     allow(principal, 'engine');
     const f = frame(params.id);

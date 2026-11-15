@@ -179,6 +179,41 @@ test('approve by the preparer is refused; so is a reviewer role a person does no
   assert.equal((await get(f)).headStatus, 'DRAFT');
 });
 
+test('a step whose agent failed parks for the author with the reason, never left open and silent (Manager#346)', async () => {
+  const { f } = await build();
+  // Only the running step can fail, and only with a reason, and only the engine side reports it.
+  assert.equal((await call('POST', `/frames/${f.frameId}/continuations/k0/fail`, 'engine', { reason: 'x' })).status, 409, 'k0 has not run');
+  const k0 = await resume(f, 'k0', 'engine', { generation: 1 });
+  assert.equal((await call('POST', `/frames/${f.frameId}/continuations/k0/fail`, 'engine', {})).status, 400);
+  assert.equal((await call('POST', `/frames/${f.frameId}/continuations/k0/fail`, { capability: k0.body.capability }, { reason: 'x' })).status, 403, 'never the agent');
+  const failed = await call('POST', `/frames/${f.frameId}/continuations/k0/fail`, 'engine',
+    { reason: 'agent openclaw: ollama/m ended without a visible assistant reply', attempts: 3 });
+  assert.equal(failed.status, 201, JSON.stringify(failed.body));
+  assert.equal(failed.body.outcome, 'failed');
+  const k1 = failed.body.continuation;
+  assert.equal(k1.status, 'parked');
+  assert.deepEqual(k1.next, engineNext('machine-draft'), 'the same step, to run again');
+  assert.deepEqual(k1.resumableBy, { role: 'author', excludeIdentity: null });
+  assert.match(k1.reason, /without a visible assistant reply/);
+  const after = await get(f);
+  assert.equal(after.status, 'open');
+  assert.equal(after.continuations[0].status, 'failed');
+  assert.equal(after.continuations[0].failedReason, k1.reason);
+  // A failed step is not resumed or failed again; the engine side cannot re-run a person's step.
+  assert.equal((await resume(f, 'k0', 'engine', { generation: 1 })).status, 409);
+  assert.equal((await call('POST', `/frames/${f.frameId}/continuations/k0/fail`, 'engine', { reason: 'x' })).status, 409);
+  assert.equal((await resume(f, 'k1', 'engine', { generation: 2 })).status, 403);
+  // The author (the preparer may be the author) re-runs it: the step's capability for the engine side.
+  const rerun = await resume(f, 'k1', alice, { generation: 2, decision: 'approve' });
+  assert.equal(rerun.body.outcome, 'resume', JSON.stringify(rerun.body));
+  assert.equal((await call('POST', `/frames/${f.frameId}/continuations/k1/capability`, 'engine', {})).status, 200);
+  const h = (await call('GET', `/frames/${f.frameId}/history`, 'engine')).body;
+  const event = h.find((e) => e.type === 'step.failed');
+  assert.equal(event.attempts, 3);
+  const keys = (await request('GET', `${base}/keys`, {})).body;
+  assert.ok(verifyReceipt((await call('GET', `/receipts/${event.receiptId}`, 'engine')).body, keys), 'the step-failed receipt verifies');
+});
+
 test('a stale upstream supersedes what is pending and re-enters at k0', async () => {
   const upstream = await doc('upstream v1');
   const { f } = await build({ upstreamRefs: [upstream.id] });
