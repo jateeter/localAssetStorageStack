@@ -79,7 +79,15 @@ async function build(e, { preparer, upstreamRefs = [], entity }) {
 // run 20261114T152700Z (scala-1's clone loaded 86 s into the wait, its turn
 // still running when it expired). ASSET_CHAIN_STEP_TIMEOUT_S overrides it.
 const STEP_S = Number(process.env.ASSET_CHAIN_STEP_TIMEOUT_S || 600);
-const parkedK = (k) => async (fid) => { const f = await frame(fid); const c = last(f); return c.status === 'parked' && c.continuationId === k ? f : null; };
+// A step whose agent failed parks for its author with the reason (the
+// lifecycle's /fail, RealityEngine_Manager#346): that is the step's result, so
+// the wait ends there and names it, rather than waiting out STEP_S.
+const parkedK = (k) => async (fid) => {
+  const f = await frame(fid);
+  const c = last(f);
+  if (c.failedFrom) throw new Error(`${fid}: step ${c.failedFrom} failed and parked for the author: ${c.reason}`);
+  return c.status === 'parked' && c.continuationId === k ? f : null;
+};
 const resume = (fid, k, who, body) => lc('POST', `/frames/${fid}/continuations/${k}/resume`, who, body);
 const types = async (fid) => (await lc('GET', `/frames/${fid}/history`, 'engine')).body.map((x) => x.type);
 

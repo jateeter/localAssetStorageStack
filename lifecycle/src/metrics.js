@@ -8,7 +8,7 @@
 // from the event log, so a restart does not reset them.
 
 const FRAME_STATUSES = ['open', 'closed', 'abandoned'];
-const CONTINUATION_STATUSES = ['captured', 'parked', 'resumed', 'superseded', 'abandoned', 'closed'];
+const CONTINUATION_STATUSES = ['captured', 'parked', 'resumed', 'superseded', 'failed', 'abandoned', 'closed'];
 const HEAD_STATUSES = ['DRAFT', 'IN_REVIEW', 'APPROVED', 'STALE', 'CLOSED', 'ABANDONED'];
 
 const esc = (v) => String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
