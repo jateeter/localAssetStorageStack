@@ -56,22 +56,47 @@ export function request(method, url, { body, headers = {}, tls = {} } = {}) {
 }
 
 // A person signed in to assets-css: client credentials, then a DPoP-bound token.
-export async function person(cfg, pod) {
+// A busy CSS (after a restart, resubscribing its inboxes) can answer a step
+// without what the next one needs, so a sign-in is tried up to `tries` times
+// with a growing pause, and the last failure names what CSS answered
+// (RealityEngine_CI regression 20261118T200839Z: "author: no access token").
+export async function person(cfg, pod, { tries = 4, pauseMs = 5000 } = {}) {
+  let last;
+  for (let n = 1; n <= tries; n += 1) {
+    try { return await signInOnce(cfg, pod); }
+    catch (e) {
+      last = e;
+      if (n < tries) {
+        console.error(`${pod}: sign-in attempt ${n} failed (${e.message}); retrying`);
+        await new Promise((r) => setTimeout(r, pauseMs * n));
+      }
+    }
+  }
+  throw new Error(`${last.message} (after ${tries} attempts)`);
+}
+
+async function signInOnce(cfg, pod) {
   const a = cfg.accounts[pod];
   if (!a) throw new Error(`no account ${pod} (ASSETS_PEOPLE)`);
   const json = async (r) => r.json();
   const idx = await json(await fetch(`${CSS}.account/`));
   const login = await json(await fetch(idx.controls.password.login, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: a.email, password: a.password }) }));
+  if (!login.authorization) throw new Error(`${pod}: password login refused (${login.message || login.name || JSON.stringify(login).slice(0, 120)})`);
   const auth = { authorization: `CSS-Account-Token ${login.authorization}` };
   const controls = (await json(await fetch(`${CSS}.account/`, { headers: auth }))).controls;
+  if (!controls?.account?.clientCredentials) throw new Error(`${pod}: the account offers no client credentials`);
   const webId = `${CSS}${pod}/profile/card#me`;
   const cc = await json(await fetch(controls.account.clientCredentials, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: JSON.stringify({ name: `checks-${pod}-${Date.now()}`, webId }) }));
+  if (!cc.id || !cc.secret) throw new Error(`${pod}: no client credentials (${cc.message || JSON.stringify(cc).slice(0, 120)})`);
   const key = dpopKey();
   const cfgOidc = await json(await fetch(`${CSS}.well-known/openid-configuration`));
   const tok = await json(await fetch(cfgOidc.token_endpoint, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded',
     authorization: `Basic ${Buffer.from(`${encodeURIComponent(cc.id)}:${encodeURIComponent(cc.secret)}`).toString('base64')}`, dpop: dpopProof(key, 'POST', cfgOidc.token_endpoint) },
     body: 'grant_type=client_credentials&scope=webid' }));
-  if (!tok.access_token) throw new Error(`${pod}: no access token`);
+  if (!tok.access_token) {
+    const why = [tok.error, tok.error_description].filter(Boolean).join(': ') || JSON.stringify(tok).slice(0, 200);
+    throw new Error(`${pod}: no access token (${why})`);
+  }
   return {
     webId,
     headers: (method, url) => ({ authorization: `DPoP ${tok.access_token}`, dpop: dpopProof(key, method, url.split('?')[0], tok.access_token) }),
