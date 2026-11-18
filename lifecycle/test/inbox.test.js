@@ -247,3 +247,59 @@ test('dokieli\'s real notification becomes a corroborated finding with its text'
     server.close();
   }
 });
+
+// RealityEngine_CI regression 20261118T200839Z: a restarted CSS dropped all 142
+// channels at once, each retried after the same fixed 5 s, and the stampede of
+// resubscriptions starved a person's sign-in. Subscriptions are bounded and a
+// dropped channel backs off with jitter.
+test('inbox subscriptions run a few at a time, at start and after a pod restart drops them all', async () => {
+  const { mountInbox, WATCH_CONCURRENCY } = await import('../src/inbox.js');
+  const assets = {};
+  for (let i = 0; i < 40; i += 1) assets[`asset-${i}`] = { id: `asset-${i}`, inbox: `${CSS}author/assets/inbox/asset-${i}/` };
+  const state = { assets, inboxSeen: {}, findings: {}, frames: {} };
+  let active = 0;
+  let peak = 0;
+  let subscribed = 0;
+  const closers = [];
+  const client = {
+    async subscribe(topic, { onClose }) {
+      active += 1; peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, 2));
+      active -= 1; subscribed += 1;
+      closers.push(onClose);
+      return { close() {} };
+    },
+    async list() { return []; },
+    async read() { return null; }
+  };
+  const timers = [];
+  const inbox = mountInbox({ d: () => state, commit: () => {}, serial: (f) => f(), now: () => '', id: (p) => p, sha256: () => '' }, client,
+    { setTimer: (fn, ms) => timers.push({ fn, ms }) });
+  inbox.start();
+  const settle = async () => { for (let i = 0; i < 200 && subscribed < 40; i += 1) await new Promise((r) => setTimeout(r, 5)); };
+  await settle();
+  assert.equal(subscribed, 40, 'every inbox is watched');
+  assert.ok(peak <= WATCH_CONCURRENCY, `at most ${WATCH_CONCURRENCY} subscriptions at once at start (peak ${peak})`);
+
+  // The pod restarts: every channel closes at once.
+  for (const close of closers.splice(0)) close();
+  assert.equal(timers.length, 40, 'each dropped channel schedules a retry');
+  const delays = timers.map((t) => t.ms);
+  assert.ok(delays.every((ms) => ms >= 2500 && ms <= 5000), 'the first retry waits 2.5-5 s');
+  assert.ok(new Set(delays).size > 10, 'with jitter: the retries do not land together');
+  peak = 0; subscribed = 0;
+  for (const t of timers.splice(0)) t.fn();
+  await settle();
+  assert.equal(subscribed, 40, 'every inbox is watched again');
+  assert.ok(peak <= WATCH_CONCURRENCY, `resubscription is bounded too (peak ${peak})`);
+  inbox.stop();
+});
+
+test('a channel that keeps failing backs off, doubling to a minute', async () => {
+  const { retryDelay, RETRY_MAX_MS } = await import('../src/inbox.js');
+  const top = (n) => retryDelay(n, () => 1);
+  const bottom = (n) => retryDelay(n, () => 0);
+  assert.deepEqual([1, 2, 3, 4, 5, 6].map(top), [5000, 10000, 20000, 40000, 60000, 60000]);
+  assert.deepEqual([1, 2, 3].map(bottom), [2500, 5000, 10000]);
+  assert.equal(top(50), RETRY_MAX_MS);
+});

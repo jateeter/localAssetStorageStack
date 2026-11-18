@@ -220,11 +220,46 @@ export function inboxClient({ fetchImpl, WebSocketImpl = globalThis.WebSocket })
 
 // --- the service side ------------------------------------------------------------
 
+// How the service (re)subscribes its inboxes, bounded (RealityEngine_CI
+// regression 20261118T200839Z). Every registered asset has an inbox, and the
+// pod's assets outlive a universe, so a restarted CSS dropped every channel at
+// once and each retried after the same fixed 5 s: 142 inboxes resubscribed
+// together (HEAD, subscribe, list), CSS's locks expired, and a person's sign-in
+// queued behind them failed. Subscriptions run a few at a time, and a dropped
+// channel retries after a doubling, jittered backoff.
+export const WATCH_CONCURRENCY = 4;
+export const RETRY_BASE_MS = 5000;
+export const RETRY_MAX_MS = 60000;
+
+export function retryDelay(attempt, random = Math.random) {
+  const ceiling = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1));
+  return Math.round(ceiling / 2 + random() * (ceiling / 2));
+}
+
+// At most `limit` of the returned function's tasks run at once; the rest wait
+// in order.
+export function gate(limit) {
+  let active = 0;
+  const waiting = [];
+  const next = () => {
+    if (active >= limit || !waiting.length) return;
+    active += 1;
+    const { task, resolve, reject } = waiting.shift();
+    Promise.resolve().then(task).then(resolve, reject).finally(() => { active -= 1; next(); });
+  };
+  return (task) => new Promise((resolve, reject) => { waiting.push({ task, resolve, reject }); next(); });
+}
+
 // ctx: { d, commit, serial, now, id, sha256 }. `client` is inboxClient(...).
-export function mountInbox(ctx, client) {
+// opts: { concurrency, retryDelay, setTimer } for tests.
+export function mountInbox(ctx, client, opts = {}) {
   const { d, commit, serial, now, id, sha256 } = ctx;
   d().inboxSeen ||= {};
   const sockets = new Map();
+  const attempts = new Map(); // assetId → consecutive failed or dropped subscriptions
+  const limit = gate(opts.concurrency ?? WATCH_CONCURRENCY);
+  const delayOf = opts.retryDelay ?? retryDelay;
+  const setTimer = opts.setTimer ?? ((fn, ms) => setTimeout(fn, ms).unref());
   let running = false;
 
   // Before every pin: the inbox exists and the document advertises it.
@@ -300,14 +335,25 @@ export function mountInbox(ctx, client) {
     const assetId = a.id;
     if (!running || sockets.has(assetId) || !a.inbox) return;
     sockets.set(assetId, null);
-    const retry = () => { sockets.delete(assetId); if (running) setTimeout(() => watch(a), 5000).unref(); };
+    const retry = () => {
+      sockets.delete(assetId);
+      if (!running) return;
+      const n = (attempts.get(assetId) || 0) + 1;
+      attempts.set(assetId, n);
+      setTimer(() => watch(a), delayOf(n));
+    };
     try {
-      const ws = await client.subscribe(a.inbox, {
-        onMessage: () => { sweep(assetId).catch((e) => console.error(`inbox ${a.inbox}: ${e.message}`)); },
-        onClose: retry
+      // Bounded: a few subscriptions (HEAD, subscribe, the first sweep) at once.
+      await limit(async () => {
+        if (!running) return;
+        const ws = await client.subscribe(a.inbox, {
+          onMessage: () => { sweep(assetId).catch((e) => console.error(`inbox ${a.inbox}: ${e.message}`)); },
+          onClose: retry
+        });
+        sockets.set(assetId, ws);
+        await sweep(assetId);
       });
-      sockets.set(assetId, ws);
-      await sweep(assetId);
+      attempts.delete(assetId);
     } catch (e) {
       console.error(`inbox ${a.inbox}: ${e.message}`);
       retry();
