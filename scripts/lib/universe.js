@@ -90,25 +90,46 @@ async function signInOnce(cfg, pod) {
   if (!cc.id || !cc.secret) throw new Error(`${pod}: no client credentials (${cc.message || JSON.stringify(cc).slice(0, 120)})`);
   const key = dpopKey();
   const cfgOidc = await json(await fetch(`${CSS}.well-known/openid-configuration`));
-  const tok = await json(await fetch(cfgOidc.token_endpoint, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded',
-    authorization: `Basic ${Buffer.from(`${encodeURIComponent(cc.id)}:${encodeURIComponent(cc.secret)}`).toString('base64')}`, dpop: dpopProof(key, 'POST', cfgOidc.token_endpoint) },
-    body: 'grant_type=client_credentials&scope=webid' }));
-  if (!tok.access_token) {
-    const why = [tok.error, tok.error_description].filter(Boolean).join(': ') || JSON.stringify(tok).slice(0, 200);
-    throw new Error(`${pod}: no access token (${why})`);
-  }
+  // assets-css issues the token for 600 s; a chain pass can outlast it (an
+  // agent turn per step: rc4-native-20261119c, 11 min on cpp-1, and the next
+  // pod write was refused 401). The person reissues it from the same client
+  // credentials before it expires, so no caller has to time its sign-in.
+  const issue = async () => {
+    const t = await json(await fetch(cfgOidc.token_endpoint, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded',
+      authorization: `Basic ${Buffer.from(`${encodeURIComponent(cc.id)}:${encodeURIComponent(cc.secret)}`).toString('base64')}`, dpop: dpopProof(key, 'POST', cfgOidc.token_endpoint) },
+      body: 'grant_type=client_credentials&scope=webid' }));
+    if (!t.access_token) {
+      const why = [t.error, t.error_description].filter(Boolean).join(': ') || JSON.stringify(t).slice(0, 200);
+      throw new Error(`${pod}: no access token (${why})`);
+    }
+    return { ...t, expiresAt: Date.now() + (Number(t.expires_in) || 600) * 1000 };
+  };
+  let tok = await issue();
+  const fresh = async () => { if (Date.now() >= tok.expiresAt - TOKEN_MARGIN_MS) tok = await issue(); };
   return {
     webId,
+    fresh,
+    // Synchronous: callers that use it call fresh() first (lifecycle() does).
     headers: (method, url) => ({ authorization: `DPoP ${tok.access_token}`, dpop: dpopProof(key, method, url.split('?')[0], tok.access_token) }),
     // DPoP-bound fetch for the person's own pod.
-    pod: (url, init = {}) => fetch(url, { ...init, headers: { ...(init.headers || {}), authorization: `DPoP ${tok.access_token}`, dpop: dpopProof(key, init.method || 'GET', url, tok.access_token) } })
+    pod: async (url, init = {}) => {
+      await fresh();
+      return fetch(url, { ...init, headers: { ...(init.headers || {}), authorization: `DPoP ${tok.access_token}`, dpop: dpopProof(key, init.method || 'GET', url, tok.access_token) } });
+    },
+    // For checks: make the next call reissue the token.
+    expireNow: () => { tok.expiresAt = 0; },
+    get token() { return tok.access_token; }
   };
 }
 
+// Reissue an access token this long before it expires.
+export const TOKEN_MARGIN_MS = 120000;
+
 // The lifecycle API as a service (by role) or a person.
 export function lifecycle(cfg) {
-  return (method, p, who, body) => {
+  return async (method, p, who, body) => {
     const url = new URL(p, cfg.lifecycleUrl).href;
+    if (typeof who !== 'string') await who.fresh?.();
     const headers = typeof who === 'string' ? { authorization: `Bearer ${cfg.tokens[who]}` } : who.headers(method, url);
     return request(method, url, { body, headers });
   };
