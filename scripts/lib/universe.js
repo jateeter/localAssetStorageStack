@@ -2,6 +2,10 @@
 // to talk to a running universe (ROADMAP phase 11). RealityEngine_CI's
 // regression harness runs them with:
 //   LIFECYCLE_URL          the lifecycle API (default: runtime/registry.json's)
+//   ASSETS_COMPOSE_DIR     where `docker compose` reaches the stack (smoke.js's
+//                          restart; default: this checkout). A release install
+//                          is its install directory: its .env names the project
+//                          and compose files (RealityEngine_CI's E1 lane).
 //   MANAGER_URL            Manager's backend (chain regression only)
 //   RE_REGISTRY_URL        the RealityEngine instance registry
 //   RE_HARNESS_TLS_CA, RE_HARNESS_TLS_CERT, RE_HARNESS_TLS_KEY
@@ -22,11 +26,14 @@ export function config() {
   // The secrets home every checkout shares (scripts/lib/secrets-home.js).
   const home = secretsHome();
   const env = serviceTokens(home);
-  const registry = JSON.parse(fs.readFileSync(path.join(root, 'runtime', 'registry.json'), 'utf8'));
+  // Read only when no LIFECYCLE_URL is given: a release install has no
+  // runtime/registry.json in this checkout.
+  const lifecycleUrl = process.env.LIFECYCLE_URL
+    || JSON.parse(fs.readFileSync(path.join(root, 'runtime', 'registry.json'), 'utf8')).services.lifecycle.externalUrl;
   const read = (v) => (process.env[v] ? fs.readFileSync(process.env[v]) : undefined);
   return {
     tokens: { registrar: env.REGISTRAR_TOKEN, engine: env.ENGINE_TOKEN, admin: env.ADMIN_TOKEN },
-    lifecycleUrl: process.env.LIFECYCLE_URL || registry.services.lifecycle.externalUrl,
+    lifecycleUrl,
     managerUrl: process.env.MANAGER_URL || '',
     registryUrl: process.env.RE_REGISTRY_URL || '',
     accounts: readAccounts(home),
