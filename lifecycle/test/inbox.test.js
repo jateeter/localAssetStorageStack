@@ -295,6 +295,57 @@ test('inbox subscriptions run a few at a time, at start and after a pod restart 
   inbox.stop();
 });
 
+// RealityEngine_CI regression rc4-native-20261119b: ~240 historical inboxes
+// queued at start, and a newly registered asset's inbox waited behind all of
+// them; its first annotation was recorded 80 s late. Live inboxes go first.
+test('a new asset\'s inbox, and one in an open frame, are watched ahead of the backlog', async () => {
+  const { mountInbox, gate } = await import('../src/inbox.js');
+  const assets = {};
+  for (let i = 0; i < 60; i += 1) assets[`asset-${i}`] = { id: `asset-${i}`, inbox: `${CSS}author/assets/inbox/asset-${i}/` };
+  // asset-50 is in an open frame when the service starts; asset-40 joins one later.
+  const frames = { 'frame-1': { frameId: 'frame-1', status: 'open', documents: [{ assetId: 'asset-50' }] } };
+  const state = { assets, inboxSeen: {}, findings: {}, frames };
+  const order = [];
+  const client = {
+    async link() { return false; },
+    async subscribe(topic) {
+      order.push(topic.split('/').at(-2));
+      await new Promise((r) => setTimeout(r, 2));
+      return { close() {} };
+    },
+    async list() { return []; },
+    async read() { return null; }
+  };
+  const inbox = mountInbox({ d: () => state, commit: () => {}, serial: (f) => f(), now: () => '', id: (p) => p, sha256: () => '' }, client,
+    { setTimer: () => {} });
+  inbox.start();
+  await new Promise((r) => setTimeout(r, 1));
+  assert.ok(order.indexOf('asset-50') < 4, `the open frame's inbox is among the first subscribed (${order.indexOf('asset-50')})`);
+
+  // A new asset registers while the backlog is draining, and a queued one is pinned.
+  const fresh = { id: 'asset-new', podUrl: `${CSS}author/assets/new.html`, inbox: `${CSS}author/assets/inbox/asset-new/` };
+  state.assets[fresh.id] = fresh;
+  await inbox.link(fresh);
+  await inbox.link({ ...assets['asset-40'], podUrl: `${CSS}author/assets/40.html` });
+  const at = order.length;
+  for (let i = 0; i < 400 && order.length < 61; i += 1) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(order.length, 61, 'every inbox is watched, the backlog included');
+  assert.ok(order.indexOf('asset-new') <= at + 4, `the new inbox does not wait for the backlog (${order.indexOf('asset-new')} of 61, ${at} done when it registered)`);
+  assert.ok(order.indexOf('asset-40') <= at + 5, `a queued inbox that is pinned again moves up (${order.indexOf('asset-40')})`);
+  inbox.stop();
+
+  // The gate itself: urgent tasks keep their order ahead of the rest.
+  const ran = [];
+  const g = gate(1);
+  const blocker = g(() => new Promise((r) => setTimeout(r, 5)));
+  const tasks = [g(() => ran.push('a'), { key: 'a' }), g(() => ran.push('b')), g(() => ran.push('u1'), { urgent: true }),
+    g(() => ran.push('u2'), { urgent: true })];
+  assert.equal(g.promote('a'), true);
+  assert.equal(g.promote('missing'), false);
+  await Promise.all([blocker, ...tasks]);
+  assert.deepEqual(ran, ['u1', 'u2', 'a', 'b']);
+});
+
 test('a channel that keeps failing backs off, doubling to a minute', async () => {
   const { retryDelay, RETRY_MAX_MS } = await import('../src/inbox.js');
   const top = (n) => retryDelay(n, () => 1);

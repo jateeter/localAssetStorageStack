@@ -227,6 +227,12 @@ export function inboxClient({ fetchImpl, WebSocketImpl = globalThis.WebSocket })
 // together (HEAD, subscribe, list), CSS's locks expired, and a person's sign-in
 // queued behind them failed. Subscriptions run a few at a time, and a dropped
 // channel retries after a doubling, jittered backoff.
+//
+// The backlog must not delay live work (RealityEngine_CI regression
+// rc4-native-20261119b): with ~240 historical inboxes queued at start, a newly
+// registered asset's inbox waited behind all of them and its first annotation
+// was recorded 80 s late. A new asset's inbox and the inboxes of assets in an
+// open frame go to the front of the queue; the backlog drains behind them.
 export const WATCH_CONCURRENCY = 4;
 export const RETRY_BASE_MS = 5000;
 export const RETRY_MAX_MS = 60000;
@@ -237,7 +243,9 @@ export function retryDelay(attempt, random = Math.random) {
 }
 
 // At most `limit` of the returned function's tasks run at once; the rest wait
-// in order.
+// in order, except that an urgent task waits ahead of every non-urgent one
+// (urgent tasks keep their own order). promote(key) makes a waiting task
+// urgent.
 export function gate(limit) {
   let active = 0;
   const waiting = [];
@@ -247,7 +255,26 @@ export function gate(limit) {
     const { task, resolve, reject } = waiting.shift();
     Promise.resolve().then(task).then(resolve, reject).finally(() => { active -= 1; next(); });
   };
-  return (task) => new Promise((resolve, reject) => { waiting.push({ task, resolve, reject }); next(); });
+  const enqueue = (entry) => {
+    if (entry.urgent) {
+      const at = waiting.findIndex((w) => !w.urgent);
+      if (at < 0) waiting.push(entry); else waiting.splice(at, 0, entry);
+    } else {
+      waiting.push(entry);
+    }
+  };
+  const run = (task, { urgent = false, key } = {}) => new Promise((resolve, reject) => {
+    enqueue({ task, resolve, reject, urgent, key });
+    next();
+  });
+  run.promote = (key) => {
+    const at = waiting.findIndex((w) => !w.urgent && w.key === key);
+    if (at < 0) return false;
+    const [entry] = waiting.splice(at, 1);
+    enqueue({ ...entry, urgent: true });
+    return true;
+  };
+  return run;
 }
 
 // ctx: { d, commit, serial, now, id, sha256 }. `client` is inboxClient(...).
@@ -268,7 +295,9 @@ export function mountInbox(ctx, client, opts = {}) {
     if (!a.inbox) return;
     await client.link(a.podUrl, a.inbox);
     // The asset itself, not its id: at registration it is not stored yet.
-    if (running && !sockets.has(a.id)) watch(a);
+    if (!running) return;
+    if (!sockets.has(a.id)) watch(a, { urgent: true });
+    else if (sockets.get(a.id) === null) limit.promote(a.id); // still queued behind the backlog
   }
 
   // One inbox item becomes one finding, recorded once.
@@ -329,9 +358,12 @@ export function mountInbox(ctx, client, opts = {}) {
   }
   const sweep = (assetId) => serial(() => sweepNow(assetId));
 
+  const inOpenFrame = (assetId) => Object.values(d().frames || {})
+    .some((x) => x.status === 'open' && x.documents?.some((doc) => doc.assetId === assetId));
+
   // Subscribe, sweep what arrived while unsubscribed, and come back after a
   // dropped channel.
-  async function watch(a) {
+  async function watch(a, { urgent = false } = {}) {
     const assetId = a.id;
     if (!running || sockets.has(assetId) || !a.inbox) return;
     sockets.set(assetId, null);
@@ -340,7 +372,7 @@ export function mountInbox(ctx, client, opts = {}) {
       if (!running) return;
       const n = (attempts.get(assetId) || 0) + 1;
       attempts.set(assetId, n);
-      setTimer(() => watch(a), delayOf(n));
+      setTimer(() => watch(a, { urgent: inOpenFrame(assetId) }), delayOf(n));
     };
     try {
       // Bounded: a few subscriptions (HEAD, subscribe, the first sweep) at once.
@@ -352,7 +384,7 @@ export function mountInbox(ctx, client, opts = {}) {
         });
         sockets.set(assetId, ws);
         await sweep(assetId);
-      });
+      }, { urgent, key: assetId });
       attempts.delete(assetId);
     } catch (e) {
       console.error(`inbox ${a.inbox}: ${e.message}`);
@@ -368,7 +400,10 @@ export function mountInbox(ctx, client, opts = {}) {
     // Once the service identity is ready.
     start() {
       running = true;
-      for (const a of Object.values(d().assets)) if (a.inbox) watch(a);
+      const all = Object.values(d().assets).filter((a) => a.inbox);
+      const live = all.filter((a) => inOpenFrame(a.id));
+      for (const a of live) watch(a, { urgent: true });
+      for (const a of all) if (!live.includes(a)) watch(a);
     },
     stop() {
       running = false;
