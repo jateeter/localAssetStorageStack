@@ -48,9 +48,11 @@ await lc('POST', `/frames/${frame.body.frameId}/abandon`, 'registrar', { reason:
 
 // Addresses stable across a restart.
 const webIdBefore = author.webId;
-// The stack's own compose project, whatever COMPOSE_PROJECT_NAME the caller has.
-const { COMPOSE_PROJECT_NAME, ...composeEnv } = process.env;
-execFileSync('docker', ['compose', 'restart', 'assets-css', 'lifecycle'], { cwd: root, stdio: 'ignore', env: composeEnv });
+// The stack's own compose project, whatever COMPOSE_PROJECT_NAME the caller has:
+// this checkout's, or a release install's (ASSETS_COMPOSE_DIR, whose .env names it).
+const { COMPOSE_PROJECT_NAME, COMPOSE_FILE, ...composeEnv } = process.env;
+execFileSync('docker', ['compose', 'restart', 'assets-css', 'lifecycle'],
+  { cwd: process.env.ASSETS_COMPOSE_DIR || root, stdio: 'ignore', env: composeEnv });
 await until('the lifecycle is ready again', async () => {
   try { const h = await request('GET', new URL('/health', cfg.lifecycleUrl).href); return h.body?.identity?.status === 'ready'; } catch { return false; }
 });
